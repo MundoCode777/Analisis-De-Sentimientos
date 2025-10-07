@@ -74,4 +74,8 @@ pysentimiento>=0.7.0
 transformers>=4.25.0
 scikit-learn>=1.2.0
 nltk>=3.7
+<<<<<<< HEAD
 torch>=2.0.0
+=======
+torch>=2.0.0
+>>>>>>> 9971022 (Se agrego el README.md y requerimientos)
