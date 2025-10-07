@@ -55,7 +55,7 @@ Una **suite avanzada de análisis de sentimientos** que compara múltiples algor
 - 💾 2GB de espacio libre (para modelos)  
 - 🌐 Conexión a internet (descarga de modelos preentrenados)
 
-### 🗂️ Estructura del Proyecto
+### 🗂️ Estructura del Proyecto`
 
 Analisis/
 │
