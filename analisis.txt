@@ -1,0 +1,1223 @@
+#analisis.py
+import pandas as pd
+import numpy as np
+from textblob import TextBlob
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import Counter
+import os
+import json
+import csv
+from io import StringIO
+import re
+import warnings
+warnings.filterwarnings('ignore')
+
+# Configurar matplotlib para mejorar la visualización
+plt.rcParams['figure.dpi'] = 100
+plt.rcParams['savefig.dpi'] = 300
+plt.rcParams['font.size'] = 10
+plt.rcParams['axes.titlesize'] = 12
+plt.rcParams['axes.labelsize'] = 10
+plt.rcParams['xtick.labelsize'] = 9
+plt.rcParams['ytick.labelsize'] = 9
+plt.rcParams['legend.fontsize'] = 9
+plt.rcParams['font.family'] = 'DejaVu Sans'  # Fuente que maneja bien el español
+
+# Importaciones opcionales que pueden fallar
+try:
+    import docx
+    DOCX_DISPONIBLE = True
+except ImportError:
+    DOCX_DISPONIBLE = False
+
+try:
+    import PyPDF2
+    PDF_DISPONIBLE = True
+except ImportError:
+    PDF_DISPONIBLE = False
+
+try:
+    from spellchecker import SpellChecker
+    SPELLCHECKER_DISPONIBLE = True
+except ImportError:
+    SPELLCHECKER_DISPONIBLE = False
+
+# Nuevas librerías para análisis avanzado
+try:
+    from pysentimiento import create_analyzer
+    PYSENTIMIENTO_DISPONIBLE = True
+except ImportError:
+    PYSENTIMIENTO_DISPONIBLE = False
+
+try:
+    from transformers import pipeline
+    import transformers
+    # Configurar transformers para ser menos verboso
+    transformers.logging.set_verbosity_error()
+    TRANSFORMERS_DISPONIBLE = True
+except ImportError:
+    TRANSFORMERS_DISPONIBLE = False
+
+
+class AnalizadorSentimientos:
+    def __init__(self):
+        self.datos = None
+        self.datos_originales = None
+        self.resultados = None
+        self.correcciones_realizadas = {}
+        
+        # Inicializar corrector ortográfico si está disponible
+        if SPELLCHECKER_DISPONIBLE:
+            self.spell = SpellChecker(language='es')
+            # Agregar palabras especiales al diccionario para preservar insultos/jerga
+            self.preservar_palabras = {
+                # Insultos comunes que no deben corregirse
+                'maldito', 'idiota', 'estúpido', 'tonto', 'bobo', 'pendejo', 'cabron', 
+                'jodido', 'pinche', 'chingado', 'madre', 'puta', 'hijo', 'cabrón',
+                # Jerga común
+                'chido', 'padrísimo', 'genial', 'súper', 'mega', 'ultra',
+                # Expresiones emotivas
+                'jajaja', 'jeje', 'wow', 'omg', 'wtf', 'lol', 'xd'
+            }
+            self.spell.word_frequency.load_words(self.preservar_palabras)
+
+        # Inicializar analizadores avanzados de forma lazy (solo cuando sea necesario)
+        self.pysentimiento_analyzer = None
+        self.transformers_analyzer = None
+        self._analizadores_inicializados = False
+
+    def _inicializar_analizadores_si_necesario(self):
+        """Inicializa los analizadores solo cuando son necesarios (lazy loading)"""
+        if not self._analizadores_inicializados:
+            print("Inicializando analizadores por primera vez...")
+            self._inicializar_analizadores_avanzados()
+            self._analizadores_inicializados = True
+
+    def _inicializar_analizadores_avanzados(self):
+        """Inicializa los analizadores de pysentimiento y transformers con optimizaciones"""
+        print("Inicializando analizadores avanzados...")
+        
+        # Inicializar pysentimiento
+        if PYSENTIMIENTO_DISPONIBLE:
+            try:
+                self.pysentimiento_analyzer = create_analyzer(task="sentiment", lang="es")
+                print("Pysentimiento inicializado correctamente")
+            except Exception as e:
+                print(f"Error al inicializar pysentimiento: {str(e)}")
+                self.pysentimiento_analyzer = None
+        
+        # Inicializar transformers con modelo más ligero y optimizaciones
+        if TRANSFORMERS_DISPONIBLE:
+            try:
+                # Usar modelo más pequeño y rápido
+                print("Descargando modelo de análisis (primera vez puede tardar)...")
+                self.transformers_analyzer = pipeline(
+                    "sentiment-analysis",
+                    model="nlptown/bert-base-multilingual-uncased-sentiment",
+                    return_all_scores=True,
+                    # Optimizaciones de rendimiento
+                    device=-1,  # Usar CPU (más compatible)
+                    tokenizer_kwargs={'max_length': 256, 'truncation': True},
+                    model_kwargs={'torch_dtype': 'auto'}
+                )
+                print("Transformers inicializado correctamente")
+            except Exception as e:
+                print(f"Error al inicializar transformers: {str(e)}")
+                # Fallback a modelo aún más básico y rápido
+                try:
+                    print("Intentando con modelo básico más rápido...")
+                    self.transformers_analyzer = pipeline(
+                        "sentiment-analysis",
+                        model="distilbert-base-uncased-finetuned-sst-2-english",
+                        return_all_scores=True,
+                        device=-1
+                    )
+                    print("Transformers inicializado con modelo básico")
+                except Exception as e2:
+                    print(f"Transformers no disponible: {str(e2)}")
+                    self.transformers_analyzer = None
+
+    def cargar_archivo(self, archivo):
+        """Carga archivos de múltiples formatos (versión lógica sin GUI)"""
+        extension = os.path.splitext(archivo)[1].lower()
+        try:
+            if extension == '.txt':
+                textos = self.leer_txt(archivo)
+            elif extension == '.csv':
+                textos = self.leer_csv(archivo)
+            elif extension in ['.xlsx', '.xls']:
+                textos = self.leer_excel(archivo, extension)
+            elif extension == '.docx':
+                if DOCX_DISPONIBLE:
+                    textos = self.leer_docx(archivo)
+                else:
+                    raise ValueError("Soporte para archivos .docx no disponible. Instale python-docx")
+            elif extension == '.pdf':
+                if PDF_DISPONIBLE:
+                    textos = self.leer_pdf(archivo)
+                else:
+                    raise ValueError("Soporte para archivos .pdf no disponible. Instale PyPDF2")
+            elif extension == '.json':
+                textos = self.leer_json(archivo)
+            elif extension == '.tsv':
+                textos = self.leer_tsv(archivo)
+            else:
+                # Intentar como archivo de texto
+                textos = self.leer_txt(archivo)
+
+            if not textos:
+                raise ValueError("No se encontraron textos válidos en el archivo")
+
+            self.datos_originales = pd.DataFrame({'texto': textos})
+            self.datos = self.limpiar_datos(self.datos_originales.copy())
+            return True, "Archivo cargado exitosamente", len(self.datos)
+        except Exception as e:
+            return False, f"Error al cargar el archivo: {str(e)}", 0
+
+    def leer_txt(self, archivo):
+        """Lee archivos de texto"""
+        encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
+        for encoding in encodings:
+            try:
+                with open(archivo, 'r', encoding=encoding) as f:
+                    contenido = f.read()
+                return [linea.strip() for linea in contenido.split('\n') if linea.strip()]
+            except UnicodeDecodeError:
+                continue
+        raise ValueError("No se pudo decodificar el archivo de texto")
+
+    def leer_csv(self, archivo):
+        """Lee archivos CSV"""
+        encodings = ['utf-8', 'latin-1', 'cp1252']
+        separadores = [',', ';', '\t']
+        for encoding in encodings:
+            for sep in separadores:
+                try:
+                    df = pd.read_csv(archivo, encoding=encoding, sep=sep)
+                    for col in df.columns:
+                        if df[col].dtype == 'object' and not df[col].isna().all():
+                            return df[col].dropna().astype(str).tolist()
+                except:
+                    continue
+        raise ValueError("No se pudo leer el archivo CSV")
+
+    def leer_excel(self, archivo, extension):
+        """Lee archivos Excel"""
+        try:
+            if extension == '.xlsx':
+                df = pd.read_excel(archivo, engine='openpyxl')
+            else:
+                df = pd.read_excel(archivo, engine='xlrd')
+            for col in df.columns:
+                if df[col].dtype == 'object' and not df[col].isna().all():
+                    return df[col].dropna().astype(str).tolist()
+        except Exception as e:
+            raise ValueError(f"Error al leer Excel: {str(e)}")
+
+    def leer_docx(self, archivo):
+        """Lee archivos Word"""
+        if not DOCX_DISPONIBLE:
+            raise ValueError("python-docx no está disponible")
+        try:
+            doc = docx.Document(archivo)
+            textos = []
+            for paragraph in doc.paragraphs:
+                if paragraph.text.strip():
+                    textos.append(paragraph.text.strip())
+            return textos
+        except Exception as e:
+            raise ValueError(f"Error al leer Word: {str(e)}")
+
+    def leer_pdf(self, archivo):
+        """Lee archivos PDF"""
+        if not PDF_DISPONIBLE:
+            raise ValueError("PyPDF2 no está disponible")
+        try:
+            textos = []
+            with open(archivo, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                for page in pdf_reader.pages:
+                    text = page.extract_text()
+                    paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+                    textos.extend(paragraphs)
+            return textos
+        except Exception as e:
+            raise ValueError(f"Error al leer PDF: {str(e)}")
+
+    def leer_json(self, archivo):
+        """Lee archivos JSON"""
+        try:
+            with open(archivo, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            textos = []
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, str):
+                        textos.append(item)
+                    elif isinstance(item, dict):
+                        for key, value in item.items():
+                            if isinstance(value, str) and len(value) > 10:
+                                textos.append(value)
+            elif isinstance(data, dict):
+                for key, value in data.items():
+                    if isinstance(value, str) and len(value) > 10:
+                        textos.append(value)
+                    elif isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, str):
+                                textos.append(item)
+            return textos
+        except Exception as e:
+            raise ValueError(f"Error al leer JSON: {str(e)}")
+
+    def leer_tsv(self, archivo):
+        """Lee archivos TSV (Tab Separated Values)"""
+        try:
+            df = pd.read_csv(archivo, sep='\t', encoding='utf-8')
+            for col in df.columns:
+                if df[col].dtype == 'object' and not df[col].isna().all():
+                    return df[col].dropna().astype(str).tolist()
+        except Exception as e:
+            raise ValueError(f"Error al leer TSV: {str(e)}")
+
+    def limpiar_datos(self, datos):
+        """Limpia y prepara los datos"""
+        datos = datos[datos['texto'].str.len() >= 5]
+        datos['texto'] = datos['texto'].str.strip()
+        datos['texto'] = datos['texto'].str.replace(r'\s+', ' ', regex=True)
+        datos = datos.drop_duplicates(subset=['texto'])
+        datos = datos.reset_index(drop=True)
+        return datos
+
+    def limpiar_ortografia(self):
+        """Limpia palabras mal escritas preservando insultos y jerga"""
+        if self.datos is None:
+            return False, "Primero carga un archivo", {}
+        
+        if not SPELLCHECKER_DISPONIBLE:
+            return False, "SpellChecker no está disponible. Instala: pip install pyspellchecker", {}
+
+        try:
+            self.correcciones_realizadas = {}
+            textos_corregidos = []
+            total_correcciones = 0
+            
+            for idx, texto in enumerate(self.datos['texto']):
+                texto_corregido, correcciones_texto = self._corregir_texto(texto)
+                textos_corregidos.append(texto_corregido)
+                
+                if correcciones_texto:
+                    self.correcciones_realizadas[idx] = correcciones_texto
+                    total_correcciones += len(correcciones_texto)
+            
+            # Actualizar los datos con las correcciones
+            self.datos['texto_original'] = self.datos['texto'].copy()
+            self.datos['texto'] = textos_corregidos
+            
+            return True, f"Limpieza completada. {total_correcciones} correcciones realizadas", self.correcciones_realizadas
+        
+        except Exception as e:
+            return False, f"Error durante la limpieza: {str(e)}", {}
+
+    def _corregir_texto(self, texto):
+        """Corrige un texto individual preservando palabras especiales"""
+        if pd.isna(texto) or texto == '':
+            return texto, {}
+        
+        # Patrones a preservar (URLs, emails, hashtags, menciones, etc.)
+        patrones_preservar = [
+            r'https?://\S+',  # URLs
+            r'\S+@\S+\.\S+',  # Emails
+            r'#\w+',          # Hashtags
+            r'@\w+',          # Menciones
+            r'\d+',           # Números
+        ]
+        
+        # Extraer patrones a preservar
+        preservados = {}
+        texto_trabajo = texto
+        for i, patron in enumerate(patrones_preservar):
+            matches = re.findall(patron, texto_trabajo)
+            for j, match in enumerate(matches):
+                placeholder = f"__PRESERVE_{i}_{j}__"
+                preservados[placeholder] = match
+                texto_trabajo = texto_trabajo.replace(match, placeholder, 1)
+        
+        # Procesar palabra por palabra
+        palabras = texto_trabajo.split()
+        palabras_corregidas = []
+        correcciones = {}
+        
+        for palabra in palabras:
+            # Si es un placeholder preservado, mantenerlo
+            if palabra in preservados:
+                palabras_corregidas.append(palabra)
+                continue
+            
+            # Limpiar palabra de puntuación para análisis
+            palabra_limpia = re.sub(r'[^\w]', '', palabra.lower())
+            
+            # Si la palabra está vacía después de limpiar, mantener original
+            if not palabra_limpia:
+                palabras_corregidas.append(palabra)
+                continue
+            
+            # Si la palabra está en nuestro diccionario de preservar, no corregir
+            if palabra_limpia in self.preservar_palabras:
+                palabras_corregidas.append(palabra)
+                continue
+            
+            # Verificar si la palabra necesita corrección
+            if palabra_limpia not in self.spell:
+                # Obtener sugerencias
+                candidatos = self.spell.candidates(palabra_limpia)
+                if candidatos:
+                    mejor_candidato = list(candidatos)[0]
+                    # Solo corregir si la sugerencia es significativamente diferente
+                    # pero no demasiado (evitar cambios drásticos)
+                    if (mejor_candidato != palabra_limpia and 
+                        len(mejor_candidato) >= len(palabra_limpia) - 2 and
+                        len(mejor_candidato) <= len(palabra_limpia) + 2):
+                        
+                        # Preservar capitalización original
+                        if palabra[0].isupper():
+                            palabra_corregida = mejor_candidato.capitalize()
+                        else:
+                            palabra_corregida = mejor_candidato
+                        
+                        # Preservar puntuación original
+                        puntuacion_final = re.findall(r'[^\w]+$', palabra)
+                        if puntuacion_final:
+                            palabra_corregida += puntuacion_final[0]
+                        
+                        correcciones[palabra] = palabra_corregida
+                        palabras_corregidas.append(palabra_corregida)
+                    else:
+                        palabras_corregidas.append(palabra)
+                else:
+                    palabras_corregidas.append(palabra)
+            else:
+                palabras_corregidas.append(palabra)
+        
+        # Reconstruir texto
+        texto_corregido = ' '.join(palabras_corregidas)
+        
+        # Restaurar patrones preservados
+        for placeholder, original in preservados.items():
+            texto_corregido = texto_corregido.replace(placeholder, original)
+        
+        return texto_corregido, correcciones
+
+    def analizar_sentimientos(self):
+        """Realiza análisis de sentimientos con múltiples métodos y comparación"""
+        if self.datos is None:
+            return False, "Primero carga un archivo"
+
+        try:
+            # Inicializar analizadores solo cuando sea necesario
+            self._inicializar_analizadores_si_necesario()
+            
+            print("Iniciando análisis comparativo de sentimientos...")
+            
+            # TextBlob Analysis (siempre disponible y rápido)
+            print("Analizando con TextBlob...")
+            textblob_results = self._analizar_textblob()
+            
+            # Pysentimiento Analysis
+            pysentimiento_results = None
+            if self.pysentimiento_analyzer:
+                print("Analizando con Pysentimiento...")
+                pysentimiento_results = self._analizar_pysentimiento()
+            
+            # Transformers Analysis (con procesamiento por lotes para mayor velocidad)
+            transformers_results = None
+            if self.transformers_analyzer:
+                print("Analizando con Transformers...")
+                transformers_results = self._analizar_transformers()
+            
+            # Agregar resultados al DataFrame
+            self._agregar_resultados_dataframe(textblob_results, pysentimiento_results, transformers_results)
+            
+            print("Análisis comparativo completado")
+            return True, "Análisis completado con múltiples métodos"
+            
+        except Exception as e:
+            return False, f"Error en el análisis: {str(e)}"
+
+    def _analizar_textblob(self):
+        """Análisis con TextBlob"""
+        def clasificar_sentimiento_textblob(texto):
+            if pd.isna(texto) or texto == '':
+                return 'neutro', 0.0, 0.0, 0.0
+            
+            blob = TextBlob(str(texto))
+            polaridad = blob.sentiment.polarity
+            subjetividad = blob.sentiment.subjectivity
+            intensidad = abs(polaridad)
+            
+            if polaridad >= 0.5:
+                return 'muy_positivo', polaridad, subjetividad, intensidad
+            elif polaridad >= 0.1:
+                return 'positivo', polaridad, subjetividad, intensidad
+            elif polaridad <= -0.5:
+                return 'muy_negativo', polaridad, subjetividad, intensidad
+            elif polaridad <= -0.1:
+                return 'negativo', polaridad, subjetividad, intensidad
+            else:
+                return 'neutro', polaridad, subjetividad, intensidad
+
+        resultados = []
+        for texto in self.datos['texto']:
+            resultado = clasificar_sentimiento_textblob(texto)
+            resultados.append(resultado)
+        
+        return resultados
+
+    def _analizar_pysentimiento(self):
+        """Análisis con Pysentimiento"""
+        if not self.pysentimiento_analyzer:
+            return None
+        
+        resultados = []
+        for texto in self.datos['texto']:
+            if pd.isna(texto) or texto == '':
+                resultados.append(('neutro', 0.0, 0.0))
+                continue
+            
+            try:
+                resultado = self.pysentimiento_analyzer.predict(str(texto))
+                sentimiento = resultado.output.lower()
+                confianza = resultado.probas[resultado.output]
+                
+                # Mapear sentimientos de pysentimiento a nuestro sistema
+                if sentimiento in ['pos', 'positive']:
+                    if confianza > 0.8:
+                        sent_final = 'muy_positivo'
+                    else:
+                        sent_final = 'positivo'
+                elif sentimiento in ['neg', 'negative']:
+                    if confianza > 0.8:
+                        sent_final = 'muy_negativo'
+                    else:
+                        sent_final = 'negativo'
+                else:
+                    sent_final = 'neutro'
+                
+                # Convertir confianza a polaridad (-1 a 1)
+                if sent_final in ['muy_positivo', 'positivo']:
+                    polaridad = confianza
+                elif sent_final in ['muy_negativo', 'negativo']:
+                    polaridad = -confianza
+                else:
+                    polaridad = 0.0
+                
+                resultados.append((sent_final, polaridad, confianza))
+            except Exception as e:
+                print(f"Error en pysentimiento para texto: {str(e)[:50]}...")
+                resultados.append(('neutro', 0.0, 0.0))
+        
+        return resultados
+
+    def _analizar_transformers(self):
+        """Análisis con Transformers optimizado - VERSIÓN CORREGIDA Y RÁPIDA"""
+        if not self.transformers_analyzer:
+            return None
+        
+        resultados = []
+        textos = self.datos['texto'].tolist()
+        
+        # Procesar en lotes para mayor eficiencia
+        batch_size = 8  # Procesar de a 8 textos para mejor rendimiento
+        print(f"Procesando {len(textos)} textos en lotes de {batch_size}...")
+        
+        for i in range(0, len(textos), batch_size):
+            batch = textos[i:i+batch_size]
+            batch_procesado = []
+            
+            for texto in batch:
+                if pd.isna(texto) or texto == '':
+                    batch_procesado.append('')
+                else:
+                    # Truncar texto para acelerar procesamiento
+                    texto_truncado = str(texto)[:256]  # Reducir longitud máxima
+                    batch_procesado.append(texto_truncado)
+            
+            try:
+                # Procesar lote completo de una vez
+                batch_results = self.transformers_analyzer(batch_procesado)
+                
+                for j, resultado in enumerate(batch_results):
+                    texto_original = batch[j]
+                    
+                    if pd.isna(texto_original) or texto_original == '':
+                        resultados.append(('neutro', 0.0, 0.0))
+                        continue
+                    
+                    try:
+                        # CORRECCIÓN: Verificar si resultado es una lista de diccionarios
+                        if isinstance(resultado, list) and len(resultado) > 0:
+                            # Si return_all_scores=True, obtenemos una lista de diccionarios
+                            scores = resultado
+                        else:
+                            # Si es un solo resultado
+                            scores = [resultado] if isinstance(resultado, dict) else []
+                        
+                        if not scores:
+                            resultados.append(('neutro', 0.0, 0.0))
+                            continue
+                        
+                        # Encontrar el score más alto
+                        max_score_item = max(scores, key=lambda x: x.get('score', 0))
+                        label = max_score_item['label'].lower()
+                        score = max_score_item['score']
+                        
+                        # Mapear etiquetas a nuestro sistema de sentimientos
+                        if any(palabra in label for palabra in ['positive', 'pos', 'label_2', '4 star', '5 star']):
+                            if score > 0.8:
+                                sent_final = 'muy_positivo'
+                            else:
+                                sent_final = 'positivo'
+                            polaridad = score
+                        elif any(palabra in label for palabra in ['negative', 'neg', 'label_0', '1 star', '2 star']):
+                            if score > 0.8:
+                                sent_final = 'muy_negativo'
+                            else:
+                                sent_final = 'negativo'
+                            polaridad = -score
+                        else:  # neutral, label_1, 3 star, etc.
+                            sent_final = 'neutro'
+                            polaridad = 0.0
+                        
+                        resultados.append((sent_final, polaridad, score))
+                        
+                    except Exception as e:
+                        print(f"Error procesando texto individual: {str(e)[:50]}...")
+                        resultados.append(('neutro', 0.0, 0.0))
+                
+            except Exception as e:
+                print(f"Error procesando lote: {str(e)[:50]}...")
+                # Agregar resultados neutros para este lote
+                for _ in batch:
+                    resultados.append(('neutro', 0.0, 0.0))
+        
+        return resultados
+
+    def _agregar_resultados_dataframe(self, textblob_results, pysentimiento_results, transformers_results):
+        """Agrega todos los resultados al DataFrame"""
+        # TextBlob
+        self.datos['tb_sentimiento'] = [r[0] for r in textblob_results]
+        self.datos['tb_polaridad'] = [r[1] for r in textblob_results]
+        self.datos['tb_subjetividad'] = [r[2] for r in textblob_results]
+        self.datos['tb_intensidad'] = [r[3] for r in textblob_results]
+        
+        # Pysentimiento
+        if pysentimiento_results:
+            self.datos['ps_sentimiento'] = [r[0] for r in pysentimiento_results]
+            self.datos['ps_polaridad'] = [r[1] for r in pysentimiento_results]
+            self.datos['ps_confianza'] = [r[2] for r in pysentimiento_results]
+        
+        # Transformers
+        if transformers_results:
+            self.datos['tf_sentimiento'] = [r[0] for r in transformers_results]
+            self.datos['tf_polaridad'] = [r[1] for r in transformers_results]
+            self.datos['tf_confianza'] = [r[2] for r in transformers_results]
+        
+        # Mantener compatibilidad con versión anterior (usar TextBlob como principal)
+        self.datos['sentimiento'] = self.datos['tb_sentimiento']
+        self.datos['polaridad'] = self.datos['tb_polaridad']
+        self.datos['subjetividad'] = self.datos['tb_subjetividad']
+        self.datos['intensidad'] = self.datos['tb_intensidad']
+        
+        # Agregar información adicional
+        self.datos['longitud_texto'] = self.datos['texto'].str.len()
+        self.datos['num_palabras'] = self.datos['texto'].str.split().str.len()
+
+    def generar_estadisticas(self):
+        """Genera estadísticas detalladas comparativas"""
+        if self.datos is None:
+            return "", "", ""
+
+        # Estadísticas para TextBlob
+        conteo_tb = Counter(self.datos['tb_sentimiento'])
+        total = len(self.datos)
+        
+        stats_text = "COMPARACIÓN DE MÉTODOS\n"
+        stats_text += "=" * 40 + "\n\n"
+        
+        # TextBlob Stats
+        positivos_tb = conteo_tb.get('positivo', 0) + conteo_tb.get('muy_positivo', 0)
+        negativos_tb = conteo_tb.get('negativo', 0) + conteo_tb.get('muy_negativo', 0)
+        neutros_tb = conteo_tb.get('neutro', 0)
+        
+        stats_text += "TextBlob:\n"
+        stats_text += f"  Positivos: {positivos_tb} ({(positivos_tb/total)*100:.1f}%)\n"
+        stats_text += f"  Negativos: {negativos_tb} ({(negativos_tb/total)*100:.1f}%)\n"
+        stats_text += f"  Neutros: {neutros_tb} ({(neutros_tb/total)*100:.1f}%)\n"
+        stats_text += f"  Polaridad promedio: {self.datos['tb_polaridad'].mean():.3f}\n\n"
+        
+        # Pysentimiento Stats
+        if 'ps_sentimiento' in self.datos.columns:
+            conteo_ps = Counter(self.datos['ps_sentimiento'])
+            positivos_ps = conteo_ps.get('positivo', 0) + conteo_ps.get('muy_positivo', 0)
+            negativos_ps = conteo_ps.get('negativo', 0) + conteo_ps.get('muy_negativo', 0)
+            neutros_ps = conteo_ps.get('neutro', 0)
+            
+            stats_text += "Pysentimiento:\n"
+            stats_text += f"  Positivos: {positivos_ps} ({(positivos_ps/total)*100:.1f}%)\n"
+            stats_text += f"  Negativos: {negativos_ps} ({(negativos_ps/total)*100:.1f}%)\n"
+            stats_text += f"  Neutros: {neutros_ps} ({(neutros_ps/total)*100:.1f}%)\n"
+            stats_text += f"  Confianza promedio: {self.datos['ps_confianza'].mean():.3f}\n\n"
+        
+        # Transformers Stats
+        if 'tf_sentimiento' in self.datos.columns:
+            conteo_tf = Counter(self.datos['tf_sentimiento'])
+            positivos_tf = conteo_tf.get('positivo', 0) + conteo_tf.get('muy_positivo', 0)
+            negativos_tf = conteo_tf.get('negativo', 0) + conteo_tf.get('muy_negativo', 0)
+            neutros_tf = conteo_tf.get('neutro', 0)
+            
+            stats_text += "Transformers:\n"
+            stats_text += f"  Positivos: {positivos_tf} ({(positivos_tf/total)*100:.1f}%)\n"
+            stats_text += f"  Negativos: {negativos_tf} ({(negativos_tf/total)*100:.1f}%)\n"
+            stats_text += f"  Neutros: {neutros_tf} ({(neutros_tf/total)*100:.1f}%)\n"
+            stats_text += f"  Confianza promedio: {self.datos['tf_confianza'].mean():.3f}\n"
+
+        resumen = self._generar_resumen_comparativo()
+        datos_detallados = self._generar_datos_detallados_comparativo()
+
+        return stats_text, resumen, datos_detallados
+
+    def _generar_resumen_comparativo(self):
+        """Genera un resumen comparativo detallado"""
+        resumen = "ANÁLISIS COMPARATIVO DE SENTIMIENTOS\n"
+        resumen += "=" * 60 + "\n\n"
+        
+        total = len(self.datos)
+        
+        # Análisis de concordancia
+        resumen += "ANÁLISIS DE CONCORDANCIA ENTRE MÉTODOS\n"
+        resumen += "-" * 40 + "\n"
+        
+        # Calcular concordancia TextBlob vs Pysentimiento
+        if 'ps_sentimiento' in self.datos.columns:
+            concordancia_tb_ps = (self.datos['tb_sentimiento'] == self.datos['ps_sentimiento']).sum()
+            resumen += f"TextBlob vs Pysentimiento: {concordancia_tb_ps}/{total} ({(concordancia_tb_ps/total)*100:.1f}%)\n"
+        
+        # Calcular concordancia TextBlob vs Transformers
+        if 'tf_sentimiento' in self.datos.columns:
+            concordancia_tb_tf = (self.datos['tb_sentimiento'] == self.datos['tf_sentimiento']).sum()
+            resumen += f"TextBlob vs Transformers: {concordancia_tb_tf}/{total} ({(concordancia_tb_tf/total)*100:.1f}%)\n"
+        
+        # Calcular concordancia Pysentimiento vs Transformers
+        if 'ps_sentimiento' in self.datos.columns and 'tf_sentimiento' in self.datos.columns:
+            concordancia_ps_tf = (self.datos['ps_sentimiento'] == self.datos['tf_sentimiento']).sum()
+            resumen += f"Pysentimiento vs Transformers: {concordancia_ps_tf}/{total} ({(concordancia_ps_tf/total)*100:.1f}%)\n"
+        
+        # Textos con consenso total
+        if 'ps_sentimiento' in self.datos.columns and 'tf_sentimiento' in self.datos.columns:
+            consenso_total = ((self.datos['tb_sentimiento'] == self.datos['ps_sentimiento']) & 
+                            (self.datos['ps_sentimiento'] == self.datos['tf_sentimiento'])).sum()
+            resumen += f"Consenso total (3 métodos): {consenso_total}/{total} ({(consenso_total/total)*100:.1f}%)\n"
+        
+        return resumen
+
+    def _generar_datos_detallados_comparativo(self):
+        """Genera datos detallados con comparación de métodos"""
+        datos_detallados = "COMPARACIÓN DETALLADA POR TEXTO\n"
+        datos_detallados += "=" * 120 + "\n\n"
+        datos_detallados += "Mostrando los primeros 20 registros con análisis comparativo:\n\n"
+        
+        # Header
+        header = f"{'#':<3} {'TextBlob':<15} {'Pysentimiento':<15} {'Transformers':<15} {'Texto':<50}\n"
+        datos_detallados += header
+        datos_detallados += "=" * 120 + "\n"
+        
+        # Mostrar datos comparativos
+        for i, row in self.datos.head(20).iterrows():
+            tb_sent = row['tb_sentimiento'][:12] + "..." if len(row['tb_sentimiento']) > 12 else row['tb_sentimiento']
+            
+            ps_sent = "N/A"
+            if 'ps_sentimiento' in row:
+                ps_sent = row['ps_sentimiento'][:12] + "..." if len(str(row['ps_sentimiento'])) > 12 else str(row['ps_sentimiento'])
+            
+            tf_sent = "N/A"
+            if 'tf_sentimiento' in row:
+                tf_sent = row['tf_sentimiento'][:12] + "..." if len(str(row['tf_sentimiento'])) > 12 else str(row['tf_sentimiento'])
+            
+            texto_corto = row['texto'][:45] + "..." if len(row['texto']) > 45 else row['texto']
+            
+            datos_detallados += f"{i+1:<3} {tb_sent:<15} {ps_sent:<15} {tf_sent:<15} {texto_corto}\n"
+        
+        if len(self.datos) > 20:
+            datos_detallados += f"\n... y {len(self.datos) - 20} registros más.\n"
+        
+        return datos_detallados
+
+    def mostrar_graficos(self):
+        """Crea y muestra gráficos comparativos mejorados para los tres métodos"""
+        if self.datos is None:
+            print("No hay datos para mostrar gráficos.")
+            return
+
+        # Configuración mejorada de matplotlib para mejor visualización
+        plt.rcParams.update({
+            'font.size': 11,
+            'axes.titlesize': 14,
+            'axes.labelsize': 12,
+            'xtick.labelsize': 10,
+            'ytick.labelsize': 10,
+            'legend.fontsize': 10,
+            'figure.titlesize': 16,
+            'font.family': 'DejaVu Sans',
+            'axes.unicode_minus': False,  # Evitar problemas con signos menos
+        })
+        
+        # Determinar cuántos métodos están disponibles
+        metodos_disponibles = ['TextBlob']
+        if 'ps_sentimiento' in self.datos.columns:
+            metodos_disponibles.append('Pysentimiento')
+        if 'tf_sentimiento' in self.datos.columns:
+            metodos_disponibles.append('Transformers')
+        
+        num_metodos = len(metodos_disponibles)
+        
+        # Crear figura con mejor espaciado
+        fig = plt.figure(figsize=(20, 7 * num_metodos))
+        fig.suptitle('Análisis Comparativo de Sentimientos por Método', 
+                    fontsize=18, fontweight='bold', y=0.98)
+
+        # Colores mejorados con mejor contraste
+        colores = ['#2E8B57', '#FFD700', '#DC143C']  # Verde mar, Oro, Carmesí
+        
+        # Crear grid de subplots
+        gs = fig.add_gridspec(num_metodos, 3, hspace=0.4, wspace=0.3, 
+                             left=0.08, right=0.95, top=0.92, bottom=0.08)
+        
+        for i, metodo in enumerate(metodos_disponibles):
+            axes_row = [fig.add_subplot(gs[i, j]) for j in range(3)]
+            self._crear_graficos_metodo_mejorado(axes_row, metodo, colores, i)
+        
+        plt.show()
+
+        # Mostrar estadísticas comparativas
+        self._mostrar_estadisticas_comparativas()
+
+    def _crear_graficos_metodo_mejorado(self, axes_row, metodo, colores, row_idx):
+        """Crea los 3 gráficos mejorados para un método específico"""
+        # Determinar las columnas según el método
+        if metodo == 'TextBlob':
+            col_sentimiento = 'tb_sentimiento'
+            col_polaridad = 'tb_polaridad'
+            col_intensidad = 'tb_intensidad'
+        elif metodo == 'Pysentimiento':
+            col_sentimiento = 'ps_sentimiento'
+            col_polaridad = 'ps_polaridad'
+            col_intensidad = 'ps_confianza'
+        elif metodo == 'Transformers':
+            col_sentimiento = 'tf_sentimiento'
+            col_polaridad = 'tf_polaridad'
+            col_intensidad = 'tf_confianza'
+        
+        # Preparar datos agrupados
+        conteo = Counter(self.datos[col_sentimiento])
+        positivos = conteo.get('muy_positivo', 0) + conteo.get('positivo', 0)
+        neutros = conteo.get('neutro', 0)
+        negativos = conteo.get('muy_negativo', 0) + conteo.get('negativo', 0)
+        
+        categorias = ['Positivo', 'Neutro', 'Negativo']
+        cantidades = [positivos, neutros, negativos]
+        total = sum(cantidades)
+        
+        # GRÁFICO 1: Barras Verticales Mejoradas
+        ax1 = axes_row[0]
+        
+        if total > 0:
+            bars = ax1.bar(categorias, cantidades, color=colores, alpha=0.8, 
+                          edgecolor='black', linewidth=2, width=0.6)
+            
+            # Agregar valores y porcentajes encima de las barras
+            for bar, cantidad in zip(bars, cantidades):
+                if cantidad > 0:
+                    height = bar.get_height()
+                    porcentaje = (cantidad / total) * 100
+                    ax1.text(bar.get_x() + bar.get_width()/2., height + max(cantidades)*0.02,
+                            f'{cantidad}\n({porcentaje:.1f}%)', 
+                            ha='center', va='bottom', fontweight='bold', fontsize=10,
+                            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+            
+            ax1.set_ylim(0, max(cantidades) * 1.2)
+        else:
+            ax1.text(0.5, 0.5, 'Sin datos disponibles', ha='center', va='center', 
+                    transform=ax1.transAxes, fontsize=12, style='italic')
+        
+        ax1.set_title(f'{metodo} - Distribución de Sentimientos', 
+                     fontweight='bold', fontsize=14, pad=20)
+        ax1.set_ylabel('Cantidad de Textos', fontweight='bold', fontsize=12)
+        ax1.grid(axis='y', alpha=0.3, linestyle='--')
+        ax1.set_axisbelow(True)
+        
+        # Mejorar etiquetas del eje x
+        ax1.tick_params(axis='x', rotation=0, labelsize=11)
+        ax1.tick_params(axis='y', labelsize=10)
+
+        # GRÁFICO 2: Gráfico Circular Mejorado
+        ax2 = axes_row[1]
+        if total > 0:
+            wedges, texts, autotexts = ax2.pie(cantidades, labels=categorias, colors=colores, 
+                                              autopct='%1.1f%%', startangle=90,
+                                              wedgeprops={'edgecolor': 'white', 'linewidth': 2},
+                                              textprops={'fontsize': 11, 'fontweight': 'bold'})
+            
+            # Mejorar la apariencia del texto de porcentajes
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontweight('bold')
+                autotext.set_fontsize(10)
+            
+            # Agregar leyenda
+            ax2.legend(wedges, [f'{cat}: {cant}' for cat, cant in zip(categorias, cantidades)],
+                      title="Cantidades", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1),
+                      fontsize=10)
+        else:
+            ax2.text(0.5, 0.5, 'Sin datos disponibles', ha='center', va='center', 
+                    transform=ax2.transAxes, fontsize=12, style='italic')
+        
+        ax2.set_title(f'{metodo} - Proporción de Sentimientos', 
+                     fontweight='bold', fontsize=14, pad=20)
+
+        # GRÁFICO 3: Distribución de valores mejorada
+        ax3 = axes_row[2]
+        valores = self.datos[col_intensidad].dropna()
+        
+        if len(valores) > 0:
+            # Crear histograma con mejor estilo
+            n, bins, patches = ax3.hist(valores, bins=20, alpha=0.7, 
+                                       edgecolor='black', linewidth=1.5)
+            
+            # Colorear barras según intensidad con gradiente
+            bin_centers = [(bins[i] + bins[i+1]) / 2 for i in range(len(patches))]
+            max_center = max(bin_centers) if bin_centers else 1
+            
+            for patch, center in zip(patches, bin_centers):
+                if metodo == 'TextBlob':
+                    # Para TextBlob usar intensidad emocional
+                    if center < 0.2:
+                        color = '#E8E8E8'  # Gris claro
+                    elif center < 0.5:
+                        color = '#FFB74D'  # Naranja claro
+                    else:
+                        color = '#FF7043'  # Naranja oscuro
+                else:
+                    # Para otros métodos usar confianza
+                    normalized = center / max_center if max_center > 0 else 0
+                    if normalized < 0.33:
+                        color = '#FFCDD2'  # Rojo claro
+                    elif normalized < 0.67:
+                        color = '#FFB74D'  # Naranja
+                    else:
+                        color = '#66BB6A'  # Verde
+                
+                patch.set_facecolor(color)
+            
+            # Líneas de estadísticas
+            promedio = valores.mean()
+            mediana = valores.median()
+            
+            ax3.axvline(x=promedio, color='red', linestyle='--', 
+                       linewidth=2.5, alpha=0.8, label=f'Promedio: {promedio:.3f}')
+            ax3.axvline(x=mediana, color='blue', linestyle=':', 
+                       linewidth=2.5, alpha=0.8, label=f'Mediana: {mediana:.3f}')
+            
+            ax3.legend(fontsize=10, framealpha=0.9)
+        else:
+            ax3.text(0.5, 0.5, 'Sin datos disponibles', ha='center', va='center', 
+                    transform=ax3.transAxes, fontsize=12, style='italic')
+        
+        if metodo == 'TextBlob':
+            titulo_metrica = 'Intensidad Emocional'
+            xlabel = 'Intensidad (0 = Neutral, 1 = Muy Intenso)'
+        else:
+            titulo_metrica = 'Confianza del Modelo'
+            xlabel = 'Confianza (0 = Baja, 1 = Alta)'
+            
+        ax3.set_title(f'{metodo} - {titulo_metrica}', 
+                     fontweight='bold', fontsize=14, pad=20)
+        ax3.set_xlabel(xlabel, fontweight='bold', fontsize=11)
+        ax3.set_ylabel('Frecuencia', fontweight='bold', fontsize=11)
+        ax3.grid(axis='y', alpha=0.3, linestyle='--')
+        ax3.set_axisbelow(True)
+        
+        # Mejorar apariencia de los ticks
+        ax3.tick_params(axis='both', labelsize=10)
+
+    def _mostrar_estadisticas_comparativas(self):
+        """Muestra estadísticas comparativas detalladas mejoradas"""
+        print("\n" + "="*80)
+        print("ANÁLISIS COMPARATIVO DE MÉTODOS")
+        print("="*80)
+        
+        total = len(self.datos)
+        
+        # Análisis por método
+        metodos = []
+        if 'tb_sentimiento' in self.datos.columns:
+            metodos.append(('TextBlob', 'tb_sentimiento', 'tb_polaridad'))
+        if 'ps_sentimiento' in self.datos.columns:
+            metodos.append(('Pysentimiento', 'ps_sentimiento', 'ps_confianza'))
+        if 'tf_sentimiento' in self.datos.columns:
+            metodos.append(('Transformers', 'tf_sentimiento', 'tf_confianza'))
+        
+        for nombre, col_sent, col_metric in metodos:
+            conteo = Counter(self.datos[col_sent])
+            positivos = conteo.get('muy_positivo', 0) + conteo.get('positivo', 0)
+            neutros = conteo.get('neutro', 0)
+            negativos = conteo.get('muy_negativo', 0) + conteo.get('negativo', 0)
+            
+            print(f"\n{nombre}:")
+            print(f"  Positivos: {positivos:4d} ({(positivos/total)*100:5.1f}%)")
+            print(f"  Neutros:   {neutros:4d} ({(neutros/total)*100:5.1f}%)")
+            print(f"  Negativos: {negativos:4d} ({(negativos/total)*100:5.1f}%)")
+            
+            if nombre == 'TextBlob':
+                print(f"  Polaridad promedio: {self.datos[col_metric].mean():6.3f}")
+            else:
+                print(f"  Confianza promedio: {self.datos[col_metric].mean():6.3f}")
+            
+            # Determinar tendencia dominante
+            if positivos > neutros and positivos > negativos:
+                tendencia = "PREDOMINANTEMENTE POSITIVA"
+            elif negativos > positivos and negativos > neutros:
+                tendencia = "PREDOMINANTEMENTE NEGATIVA"
+            else:
+                tendencia = "EQUILIBRADA/NEUTRA"
+            
+            print(f"  Tendencia: {tendencia}")
+        
+        # Análisis de concordancia si hay múltiples métodos
+        if len(metodos) > 1:
+            print(f"\nANÁLISIS DE CONCORDANCIA:")
+            print("-" * 40)
+            
+            if len(metodos) >= 2:
+                # TextBlob vs Pysentimiento
+                if 'ps_sentimiento' in self.datos.columns:
+                    concordancia = (self.datos['tb_sentimiento'] == self.datos['ps_sentimiento']).sum()
+                    print(f"TextBlob vs Pysentimiento: {concordancia:3d}/{total} ({(concordancia/total)*100:5.1f}%)")
+                
+                # TextBlob vs Transformers
+                if 'tf_sentimiento' in self.datos.columns:
+                    concordancia = (self.datos['tb_sentimiento'] == self.datos['tf_sentimiento']).sum()
+                    print(f"TextBlob vs Transformers:  {concordancia:3d}/{total} ({(concordancia/total)*100:5.1f}%)")
+                
+                # Pysentimiento vs Transformers
+                if 'ps_sentimiento' in self.datos.columns and 'tf_sentimiento' in self.datos.columns:
+                    concordancia = (self.datos['ps_sentimiento'] == self.datos['tf_sentimiento']).sum()
+                    print(f"Pysentimiento vs Transformers: {concordancia:3d}/{total} ({(concordancia/total)*100:5.1f}%)")
+            
+            # Consenso total si hay 3 métodos
+            if len(metodos) == 3:
+                consenso = ((self.datos['tb_sentimiento'] == self.datos['ps_sentimiento']) & 
+                          (self.datos['ps_sentimiento'] == self.datos['tf_sentimiento'])).sum()
+                print(f"Consenso total (3 métodos): {consenso:3d}/{total} ({(consenso/total)*100:5.1f}%)")
+        
+        # Recomendación de método
+        print(f"\nRECOMENDACIONES:")
+        print("-" * 40)
+        print("• TextBlob: Rápido, bueno para análisis general y textos en inglés")
+        print("• Pysentimiento: Específico para español, mejor precisión en idioma español")
+        print("• Transformers: Modelos más avanzados, mejor para contextos complejos")
+        
+        if len(metodos) > 1:
+            print("• Para mayor confiabilidad, considere textos con consenso entre métodos")
+        
+        print("="*80)
+
+    def exportar_resultados(self, archivo_salida):
+        """Exporta resultados comparativos con información de todos los métodos"""
+        if self.datos is None:
+            return False, "No hay datos para exportar"
+
+        try:
+            extension = os.path.splitext(archivo_salida)[1].lower()
+            
+            if extension == '.xlsx':
+                with pd.ExcelWriter(archivo_salida, engine='openpyxl') as writer:
+                    # Hoja principal con todos los resultados
+                    self.datos.to_excel(writer, sheet_name='Resultados_Completos', index=False)
+                    
+                    # Hoja de comparación de métodos
+                    metodos_data = []
+                    
+                    # TextBlob
+                    conteo_tb = Counter(self.datos['tb_sentimiento'])
+                    metodos_data.append(['TextBlob', 'Positivos', conteo_tb.get('muy_positivo', 0) + conteo_tb.get('positivo', 0)])
+                    metodos_data.append(['TextBlob', 'Neutros', conteo_tb.get('neutro', 0)])
+                    metodos_data.append(['TextBlob', 'Negativos', conteo_tb.get('muy_negativo', 0) + conteo_tb.get('negativo', 0)])
+                    metodos_data.append(['TextBlob', 'Polaridad promedio', f"{self.datos['tb_polaridad'].mean():.3f}"])
+                    
+                    # Pysentimiento
+                    if 'ps_sentimiento' in self.datos.columns:
+                        conteo_ps = Counter(self.datos['ps_sentimiento'])
+                        metodos_data.append(['Pysentimiento', 'Positivos', conteo_ps.get('muy_positivo', 0) + conteo_ps.get('positivo', 0)])
+                        metodos_data.append(['Pysentimiento', 'Neutros', conteo_ps.get('neutro', 0)])
+                        metodos_data.append(['Pysentimiento', 'Negativos', conteo_ps.get('muy_negativo', 0) + conteo_ps.get('negativo', 0)])
+                        metodos_data.append(['Pysentimiento', 'Confianza promedio', f"{self.datos['ps_confianza'].mean():.3f}"])
+                    
+                    # Transformers
+                    if 'tf_sentimiento' in self.datos.columns:
+                        conteo_tf = Counter(self.datos['tf_sentimiento'])
+                        metodos_data.append(['Transformers', 'Positivos', conteo_tf.get('muy_positivo', 0) + conteo_tf.get('positivo', 0)])
+                        metodos_data.append(['Transformers', 'Neutros', conteo_tf.get('neutro', 0)])
+                        metodos_data.append(['Transformers', 'Negativos', conteo_tf.get('muy_negativo', 0) + conteo_tf.get('negativo', 0)])
+                        metodos_data.append(['Transformers', 'Confianza promedio', f"{self.datos['tf_confianza'].mean():.3f}"])
+                    
+                    comparacion_df = pd.DataFrame(metodos_data, columns=['Método', 'Métrica', 'Valor'])
+                    comparacion_df.to_excel(writer, sheet_name='Comparacion_Metodos', index=False)
+                    
+                    # Análisis de concordancia
+                    if 'ps_sentimiento' in self.datos.columns or 'tf_sentimiento' in self.datos.columns:
+                        concordancia_data = []
+                        total = len(self.datos)
+                        
+                        if 'ps_sentimiento' in self.datos.columns:
+                            conc_tb_ps = (self.datos['tb_sentimiento'] == self.datos['ps_sentimiento']).sum()
+                            concordancia_data.append(['TextBlob vs Pysentimiento', conc_tb_ps, f"{(conc_tb_ps/total)*100:.1f}%"])
+                        
+                        if 'tf_sentimiento' in self.datos.columns:
+                            conc_tb_tf = (self.datos['tb_sentimiento'] == self.datos['tf_sentimiento']).sum()
+                            concordancia_data.append(['TextBlob vs Transformers', conc_tb_tf, f"{(conc_tb_tf/total)*100:.1f}%"])
+                        
+                        if 'ps_sentimiento' in self.datos.columns and 'tf_sentimiento' in self.datos.columns:
+                            conc_ps_tf = (self.datos['ps_sentimiento'] == self.datos['tf_sentimiento']).sum()
+                            concordancia_data.append(['Pysentimiento vs Transformers', conc_ps_tf, f"{(conc_ps_tf/total)*100:.1f}%"])
+                            
+                            consenso = ((self.datos['tb_sentimiento'] == self.datos['ps_sentimiento']) & 
+                                      (self.datos['ps_sentimiento'] == self.datos['tf_sentimiento'])).sum()
+                            concordancia_data.append(['Consenso total', consenso, f"{(consenso/total)*100:.1f}%"])
+                        
+                        concordancia_df = pd.DataFrame(concordancia_data, columns=['Comparación', 'Cantidad', 'Porcentaje'])
+                        concordancia_df.to_excel(writer, sheet_name='Concordancia', index=False)
+            
+            elif extension == '.csv':
+                self.datos.to_csv(archivo_salida, index=False, encoding='utf-8')
+            
+            elif extension == '.json':
+                resultado_json = {
+                    'metadata': {
+                        'total_textos': len(self.datos),
+                        'fecha_analisis': pd.Timestamp.now().isoformat(),
+                        'metodos_utilizados': []
+                    },
+                    'resultados': self.datos.to_dict('records')
+                }
+                
+                # Agregar métodos utilizados
+                if 'tb_sentimiento' in self.datos.columns:
+                    resultado_json['metadata']['metodos_utilizados'].append('TextBlob')
+                if 'ps_sentimiento' in self.datos.columns:
+                    resultado_json['metadata']['metodos_utilizados'].append('Pysentimiento')
+                if 'tf_sentimiento' in self.datos.columns:
+                    resultado_json['metadata']['metodos_utilizados'].append('Transformers')
+                
+                with open(archivo_salida, 'w', encoding='utf-8') as f:
+                    json.dump(resultado_json, f, indent=2, ensure_ascii=False)
+            
+            elif extension == '.txt':
+                with open(archivo_salida, 'w', encoding='utf-8') as f:
+                    f.write("RESULTADOS DEL ANÁLISIS COMPARATIVO DE SENTIMIENTOS\n")
+                    f.write("=" * 80 + "\n\n")
+                    
+                    # Escribir resumen comparativo
+                    resumen = self._generar_resumen_comparativo()
+                    f.write(resumen)
+                    
+                    f.write("\n" + "=" * 80 + "\n")
+                    f.write("RESULTADOS DETALLADOS:\n")
+                    f.write("=" * 80 + "\n")
+                    
+                    for i, row in self.datos.iterrows():
+                        f.write(f"Texto {i+1}:\n")
+                        f.write(f"Contenido: {row['texto']}\n")
+                        f.write(f"TextBlob: {row['tb_sentimiento']} (Polaridad: {row['tb_polaridad']:.3f})\n")
+                        if 'ps_sentimiento' in row:
+                            f.write(f"Pysentimiento: {row['ps_sentimiento']} (Confianza: {row['ps_confianza']:.3f})\n")
+                        if 'tf_sentimiento' in row:
+                            f.write(f"Transformers: {row['tf_sentimiento']} (Confianza: {row['tf_confianza']:.3f})\n")
+                        f.write("-" * 60 + "\n")
+            
+            return True, "Exportación comparativa completada"
+        except Exception as e:
+            return False, f"Error al exportar: {str(e)}"
+
+
+def verificar_dependencias():
+    """Verifica e instala dependencias necesarias incluyendo las nuevas librerías"""
+    dependencias_requeridas = [
+        'pandas', 'numpy', 'textblob', 'matplotlib', 'seaborn', 
+        'openpyxl', 'xlrd'
+    ]
+    
+    dependencias_opcionales = [
+        ('python-docx', 'docx', 'Soporte para archivos Word (.docx)'),
+        ('PyPDF2', 'PyPDF2', 'Soporte para archivos PDF (.pdf)'),
+        ('wordcloud', 'wordcloud', 'Nubes de palabras'),
+        ('nltk', 'nltk', 'Procesamiento de texto avanzado'),
+        ('pyspellchecker', 'spellchecker', 'Corrección ortográfica automática'),
+        ('pysentimiento', 'pysentimiento', 'Análisis de sentimientos específico para español'),
+        ('transformers', 'transformers', 'Modelos de transformers para análisis avanzado')
+    ]
+    
+    print("Verificando dependencias...")
+    
+    # Verificar dependencias requeridas
+    faltantes = []
+    for dep in dependencias_requeridas:
+        try:
+            __import__(dep)
+        except ImportError:
+            faltantes.append(dep)
+    
+    if faltantes:
+        print(f"Dependencias requeridas faltantes: {', '.join(faltantes)}")
+        print(f"Instala con: pip install {' '.join(faltantes)}")
+        return False
+    
+    print("Todas las dependencias requeridas están instaladas")
+    
+    # Verificar dependencias opcionales
+    disponibles = []
+    no_disponibles = []
+    
+    for pip_name, import_name, descripcion in dependencias_opcionales:
+        try:
+            if import_name == 'docx':
+                import docx
+            elif import_name == 'spellchecker':
+                from spellchecker import SpellChecker
+            elif import_name == 'pysentimiento':
+                from pysentimiento import create_analyzer
+            elif import_name == 'transformers':
+                from transformers import pipeline
+            else:
+                __import__(import_name)
+            disponibles.append(f"{pip_name}: {descripcion}")
+        except ImportError:
+            no_disponibles.append(f"{pip_name}: {descripcion} (opcional)")
+    
+    for disponible in disponibles:
+        print(f"✓ {disponible}")
+    
+    if no_disponibles:
+        print("\nDEPENDENCIAS OPCIONALES NO DISPONIBLES:")
+        for no_disp in no_disponibles:
+            print(f"⚠ {no_disp}")
+        print("\nPara instalar todas las opcionales:")
+        print("pip install python-docx PyPDF2 wordcloud nltk pyspellchecker pysentimiento transformers torch")
+        print("\nNota: pysentimiento y transformers requieren modelos adicionales que se descargarán automáticamente")
+    
+    return True
+
+
+if __name__ == "__main__":
+    # Verificar dependencias
+    verificar_dependencias()

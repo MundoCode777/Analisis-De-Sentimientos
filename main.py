@@ -1,0 +1,1826 @@
+#main.py
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import threading
+import os
+import re
+
+# Importar lógica
+from analisis import AnalizadorSentimientos as AnalizadorLogica, verificar_dependencias
+
+# Dependencias opcionales
+DOCX_DISPONIBLE = False
+PDF_DISPONIBLE = False
+SPELLCHECKER_DISPONIBLE = False
+
+try:
+    import docx
+    DOCX_DISPONIBLE = True
+except ImportError:
+    pass
+
+try:
+    import PyPDF2
+    PDF_DISPONIBLE = True
+except ImportError:
+    pass
+
+# --- NUEVOS MODELOS DE ANÁLISIS DE SENTIMIENTOS ---
+try:
+    from pysentimiento import create_analyzer
+    PYSENTIMIENTOS_DISPONIBLE = True
+except ImportError:
+    PYSENTIMIENTOS_DISPONIBLE = False
+
+try:
+    from transformers import pipeline
+    TRANSFORMERS_DISPONIBLE = True
+except ImportError:
+    TRANSFORMERS_DISPONIBLE = False
+
+# NUEVOS: VADER Y NAIVE BAYES
+try:
+    from nltk.sentiment.vader import SentimentIntensityAnalyzer
+    VADER_DISPONIBLE = True
+except ImportError:
+    VADER_DISPONIBLE = False
+
+try:
+    from sklearn.feature_extraction.text import CountVectorizer
+    from sklearn.naive_bayes import BernoulliNB
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import accuracy_score, classification_report
+    from sklearn.pipeline import Pipeline
+    SKLEARN_DISPONIBLE = True
+except ImportError:
+    SKLEARN_DISPONIBLE = False
+
+try:
+    from spellchecker import SpellChecker
+    SPELLCHECKER_DISPONIBLE = True
+except ImportError:
+    pass
+
+# Clase para limpieza robusta de datos CON CORRECCIÓN ORTOGRÁFICA
+class LimpiadorDatosRobusto:
+    """Clase especializada para limpieza exhaustiva de datos de texto con corrección ortográfica"""        
+    def __init__(self):
+        # Diccionario de reemplazos para caracteres especiales y leetspeak
+        self.replacements = {
+            # Leetspeak básico
+            '@': 'a', '4': 'a', '∆': 'a',
+            '3': 'e', '€': 'e', 
+            '1': 'i', '!': 'i', '|': 'i',
+            '0': 'o', '°': 'o',
+            '5': 's', '$': 's', '§': 's',
+            '7': 't', '+': 't',
+            '8': 'b', 'ß': 'b',
+            '6': 'g', '9': 'g',
+            '2': 'z',
+            
+            # Caracteres especiales comunes
+            'ñ': 'n', 'Ñ': 'N',
+            'á': 'a', 'à': 'a', 'ä': 'a', 'â': 'a', 'ā': 'a', 'ă': 'a', 'ą': 'a',
+            'é': 'e', 'è': 'e', 'ë': 'e', 'ê': 'e', 'ē': 'e', 'ĕ': 'e', 'ę': 'e',
+            'í': 'i', 'ì': 'i', 'ï': 'i', 'î': 'i', 'ī': 'i', 'ĭ': 'i', 'į': 'i',
+            'ó': 'o', 'ò': 'o', 'ö': 'o', 'ô': 'o', 'ō': 'o', 'ŏ': 'o', 'ő': 'o',
+            'ú': 'u', 'ù': 'u', 'ü': 'u', 'û': 'u', 'ū': 'u', 'ŭ': 'u', 'ů': 'u',
+            
+            # Mayúsculas con acentos
+            'Á': 'A', 'À': 'A', 'Ä': 'A', 'Â': 'A', 'Ā': 'A', 'Ă': 'A', 'Ą': 'A',
+            'É': 'E', 'È': 'E', 'Ë': 'E', 'Ê': 'E', 'Ē': 'E', 'Ĕ': 'E', 'Ę': 'E',
+            'Í': 'I', 'Ì': 'I', 'Ï': 'I', 'Î': 'I', 'Ī': 'I', 'Ĭ': 'I', 'Į': 'I',
+            'Ó': 'O', 'Ò': 'O', 'Ö': 'O', 'Ô': 'O', 'Ō': 'O', 'Ŏ': 'O', 'Ő': 'O',
+            'Ú': 'U', 'Ù': 'U', 'Ü': 'U', 'Û': 'U', 'Ū': 'U', 'Ŭ': 'U', 'Ů': 'U',
+            
+            # Caracteres raros y símbolos
+            '¿': '', '¡': '',
+            '«': '"', '»': '"',
+            '"': '"', '"': '"',
+            ''': "'", ''': "'",
+            '…': '...',
+            '–': '-', '—': '-',
+            '•': '-', '·': '-',
+            '°': 'o', '™': '', '®': '', '©': '',
+            '€': 'euros', '£': 'libras', '$': 'dolares',
+            '&': ' y ', '%': ' por ciento',
+        }
+        
+        # Patrones para diferentes tipos de "basura" en texto
+        self.regex_patterns = {
+            # URLs y enlaces
+            'urls': r'https?://[^\s]+|www\.[^\s]+|[^\s]+\.com[^\s]*|[^\s]+\.org[^\s]*|[^\s]+\.net[^\s]*',
+            # Emails
+            'emails': r'\S+@\S+\.\S+',
+            # Hashtags y menciones
+            'social': r'#\w+|@\w+',
+            # Números de teléfono
+            'phones': r'(\+?1?[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}',
+            # Códigos y IDs alfanuméricos
+            'codes': r'\b[A-Z0-9]{3,}-[A-Z0-9]{3,}\b|\b[A-Z]{2,}[0-9]{3,}\b',
+            # Múltiples espacios, tabs, saltos de línea
+            'whitespace': r'\s+',
+            # Múltiples signos de puntuación
+            'punct_multiple': r'[.]{3,}|[!]{2,}|[?]{2,}|[,]{2,}|[;]{2,}|[:-]{2,}',
+            # Caracteres de control y no imprimibles
+            'control_chars': r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]',
+            # HTML tags básicos
+            'html_tags': r'<[^>]+>|&nbsp;|&amp;|&lt;|&gt;|&quot;|&#\d+;',
+            # Repeticiones excesivas de caracteres
+            'char_repeat': r'([a-zA-Z])\1{3,}',
+            # Números largos sin contexto
+            'long_numbers': r'\b\d{10,}\b',
+        }
+        
+        # Palabras comunes mal escritas y sus correcciones
+        
+        self.common_misspellings = {
+            # Errores comunes en español
+            'q': 'que', 'x': 'por', 'xq': 'porque', 'pq': 'porque', 'xk': 'porque',
+            'tb': 'también', 'tmb': 'también', 'tbn': 'también',
+            'd': 'de', 'pa': 'para', 'pr': 'por',
+            'sta': 'esta', 'sto': 'esto', 'stoy': 'estoy',
+            'bn': 'bien', 'mj': 'mejor', 'mjr': 'mejor',
+            'salu2': 'saludos', 'bss': 'besos', 'bso': 'beso',
+            'grax': 'gracias', 'grcs': 'gracias', 'grc': 'gracias',
+            'wey': 'güey', 'we': 'güey', 'bro': 'hermano',
+            'k': 'que', 'ke': 'que', 'kien': 'quien',
+            'komo': 'como', 'kuando': 'cuando', 'kual': 'cual',
+            'aver': 'a ver', 'ablar': 'hablar', 'acer': 'hacer',
+            'dnd': 'donde', 'tmpo': 'tiempo', 'nmbr': 'nombre',
+            'msj': 'mensaje', 'msg': 'mensaje', 'txt': 'texto',
+            'fb': 'facebook', 'ig': 'instagram', 'tw': 'twitter',
+            'lol': 'risa', 'omg': 'dios mío', 'wtf': 'qué diablos',
+            
+            # ✅ Correcciones específicas que necesitas
+            'hpla': 'hola',
+            'felis': 'feliz',
+            'sentio': 'sentido',
+            'senti': 'siento',
+            'snt': 'siento',
+            'stoy': 'estoy',
+            'stas': 'estás',
+            'sta': 'está',
+            'q': 'que',
+            'xq': 'porque',
+            'x': 'por',
+            'k': 'que',
+            'kiero': 'quiero',
+            'keria': 'quería',
+            'ay': 'hay',
+            'ai': 'hay',
+            'all': 'ahí',
+            'ahi': 'ahí',
+            'ps': 'pues',
+            'pos': 'pues',
+            'pq': 'porque',
+            'Quiero': 'Quiero',
+            'queiro': 'quiero',
+            'sento': 'siento',
+            'quijero': 'quiero',
+                   
+            # Errores de escritura con números
+            'm8': 'mate', 'l8r': 'later', 'u2': 'you too',
+            '2morrow': 'mañana', '4ever': 'para siempre',
+            'b4': 'antes', '2day': 'hoy', '2night': 'esta noche',
+            
+            # Errores ortográficos comunes que quieres corregir
+            'seto': 'siento', 'felis': 'feliz', 'estoi': 'estoy',
+            'aser': 'hacer', 'ablar': 'hablar', 'tener': 'tener',
+            'saver': 'saber', 'bamos': 'vamos', 'benir': 'venir',
+            'aora': 'ahora', 'lla': 'ya', 'tambien': 'también',
+            'despues': 'después', 'facil': 'fácil', 'dificil': 'difícil'
+        }
+        
+        # Emojis y emoticonos a texto
+        self.emoji_to_text = {
+            '😀': ' feliz ', '😃': ' feliz ', '😄': ' feliz ', '😁': ' feliz ',
+            '😅': ' risa nerviosa ', '😂': ' risa ', '🤣': ' risa ',
+            '😊': ' sonrisa ', '😇': ' angelical ', '🙂': ' sonrisa leve ',
+            '😉': ' guiño ', '😌': ' aliviado ', '😍': ' enamorado ',
+            '😘': ' beso ', '😗': ' beso ', '😙': ' beso ', '😚': ' beso ',
+            '😋': ' delicioso ', '😛': ' lengua fuera ', '😜': ' guiño lengua ',
+            '🤪': ' loco ', '😝': ' lengua fuera ', '🤗': ' abrazo ',
+            '😏': ' picaro ', '😒': ' aburrido ', '🙄': ' ojos en blanco ',
+            '😬': ' nervioso ', '🤐': ' callado ', '😷': ' enfermo ',
+            '🤒': ' enfermo ', '🤕': ' herido ', '🤢': ' nauseas ',
+            '🤮': ' vomito ', '🤧': ' estornudo ', '😵': ' mareado ',
+            '😴': ' dormido ', '😪': ' somnoliento ', '😔': ' triste ',
+            '😟': ' preocupado ', '😕': ' confundido ', '🙁': ' triste ',
+            '😖': ' confundido ', '😣': ' perseverante ', '😞': ' decepcionado ',
+            '😓': ' sudor frio ', '😩': ' cansado ', '😫': ' cansado ',
+            '😤': ' enojado ', '😠': ' enojado ', '😡': ' furioso ',
+            '🤬': ' palabrotas ', '😈': ' diablillo ', '👿': ' demonio ',
+            '💀': ' muerte ', '☠️': ' calavera ', '👻': ' fantasma ',
+            '👽': ' alien ', '👾': ' monstruo ', '🤖': ' robot ',
+            '💩': ' caca ', '🤡': ' payaso ', '👹': ' ogro ',
+            '👺': ' duende ', '🔥': ' fuego ', '💯': ' cien por cien ',
+            '💢': ' enojado ', '💥': ' explosion ', '💫': ' mareado ',
+            '💦': ' gotas ', '💨': ' viento ', '🕳️': ' hoyo ',
+            '💣': ' bomba ', '💤': ' dormido ','👏👏': ' aplausos ', '👋': ' saludo ',
+            '❤️': ' amor ', '💔': ' corazon roto ','🇪🇨': 'bandera de Ecuador ','<3': ' amor ',
+
+            # Emoticonos texto
+            ':)': ' feliz ', ':-)': ' feliz ', '(:': ' feliz ',
+            ':D': ' muy feliz ', ':-D': ' muy feliz ', 'XD': ' risa ',
+            ':P': ' lengua fuera ', ':-P': ' lengua fuera ', ':p': ' lengua fuera ',
+            ';)': ' guiño ', ';-)': ' guiño ', ';P': ' guiño lengua ',
+            ':(': ' triste ', ':-(': ' triste ', ')=': ' triste ',
+            ":'(": ' llorando ', ':,(': ' llorando ', 'T_T': ' llorando ',
+            ':S': ' confundido ', ':-S': ' confundido ', ':s': ' confundido ',
+            ':O': ' sorprendido ', ':-O': ' sorprendido ', ':o': ' sorprendido ',
+            ':|': ' serio ', ':-|': ' serio ', '-_-': ' serio ',
+            ':@': ' enojado ', '>:(': ' enojado ', '>:-(': ' enojado ',
+            '<3': ' amor ', '</3': ' corazon roto ', '<\\3': ' corazon roto ',
+        }
+        
+        # NUEVAS VARIABLES para estadísticas
+        self.estadisticas = {}
+        
+        # Inicializar corrector ortográfico si está disponible
+        self.corrector_disponible = False
+        if SPELLCHECKER_DISPONIBLE:
+            try:
+                from spellchecker import SpellChecker
+                self.spell = SpellChecker(language='es')  # Español
+                self.corrector_disponible = True
+                print("✅ Corrector ortográfico español inicializado")
+            except Exception as e:
+                print(f"⚠️ Error al inicializar corrector: {e}")
+                self.corrector_disponible = False
+
+    def limpiar_texto_completo(self, texto):
+        """
+        Aplica todas las limpiezas a un texto individual
+        """
+        if not isinstance(texto, str):
+            texto = str(texto)
+        
+        texto_limpio = texto
+        correcciones_realizadas = 0
+        
+        # 1. CORRECCIÓN DE PALABRAS COMUNES MAL ESCRITAS (TU DICCIONARIO)
+        palabras = texto_limpio.split()
+        palabras_corregidas = []
+        
+        for palabra in palabras:
+            palabra_limpia = re.sub(r'[^\w]', '', palabra.lower())  # Quitar puntuación para comparar
+            
+            # Buscar en tu diccionario de errores comunes
+            if palabra_limpia in self.common_misspellings:
+                correccion = self.common_misspellings[palabra_limpia]
+                # Preservar mayúsculas originales
+                if palabra[0].isupper():
+                    correccion = correccion.capitalize()
+                # Reemplazar manteniendo puntuación
+                palabra_corregida = re.sub(r'\w+', correccion, palabra, count=1)
+                palabras_corregidas.append(palabra_corregida)
+                correcciones_realizadas += 1
+            else:
+                palabras_corregidas.append(palabra)
+        
+        texto_limpio = ' '.join(palabras_corregidas)
+        
+        # 2. CORRECCIÓN ORTOGRÁFICA CON SPELLCHECKER (si está disponible)
+        if self.corrector_disponible:
+            palabras_para_revisar = re.findall(r'\b\w+\b', texto_limpio.lower())
+            for palabra_original in palabras_para_revisar:
+                if len(palabra_original) > 2 and palabra_original not in self.spell:
+                    candidatos = self.spell.candidates(palabra_original)
+                    if candidatos:
+                        correccion = list(candidatos)[0]
+                        if palabra_original != correccion:
+                            # Reemplazar en el texto manteniendo mayúsculas
+                            patron = r'\b' + re.escape(palabra_original) + r'\b'
+                            def reemplazar_palabra(match):
+                                palabra_match = match.group()
+                                if palabra_match.isupper():
+                                    return correccion.upper()
+                                elif palabra_match.istitle():
+                                    return correccion.capitalize()
+                                else:
+                                    return correccion
+                            
+                            nuevo_texto = re.sub(patron, reemplazar_palabra, texto_limpio, flags=re.IGNORECASE)
+                            if nuevo_texto != texto_limpio:
+                                correcciones_realizadas += 1
+                                texto_limpio = nuevo_texto
+        
+        # 3. Reemplazar emojis y emoticonos
+        for emoji, texto_emoji in self.emoji_to_text.items():
+            if emoji in texto_limpio:
+                texto_limpio = texto_limpio.replace(emoji, texto_emoji)
+        
+        # 4. Aplicar reemplazos de caracteres especiales
+        for char, replacement in self.replacements.items():
+            texto_limpio = texto_limpio.replace(char, replacement)
+        
+        # 5. Limpiar URLs, emails, etc.
+        for pattern_name, pattern in self.regex_patterns.items():
+            if pattern_name == 'urls':
+                texto_limpio = re.sub(pattern, '[URL_REMOVIDA]', texto_limpio)
+            elif pattern_name == 'emails':
+                texto_limpio = re.sub(pattern, '[EMAIL_REMOVIDO]', texto_limpio)
+            elif pattern_name == 'social':
+                texto_limpio = re.sub(pattern, '[MENCION_REMOVIDA]', texto_limpio)
+            elif pattern_name == 'phones':
+                texto_limpio = re.sub(pattern, '[TELEFONO_REMOVIDO]', texto_limpio)
+            elif pattern_name == 'whitespace':
+                texto_limpio = re.sub(pattern, ' ', texto_limpio)
+            elif pattern_name == 'punct_multiple':
+                texto_limpio = re.sub(pattern, '.', texto_limpio)
+            elif pattern_name == 'control_chars':
+                texto_limpio = re.sub(pattern, '', texto_limpio)
+            elif pattern_name == 'html_tags':
+                texto_limpio = re.sub(pattern, '', texto_limpio)
+            elif pattern_name == 'char_repeat':
+                texto_limpio = re.sub(pattern, r'\1\1', texto_limpio)
+            elif pattern_name == 'long_numbers':
+                texto_limpio = re.sub(pattern, '[NUMERO_REMOVIDO]', texto_limpio)
+        
+        # Limpiar espacios extra
+        texto_limpio = re.sub(r'\s+', ' ', texto_limpio).strip()
+        
+        return texto_limpio, correcciones_realizadas
+
+    def limpiar_datos_post_analisis(self, datos):
+        """
+        Realiza una limpieza robusta de los datos después del análisis CON CORRECCIÓN ORTOGRÁFICA
+        """
+        import pandas as pd
+        
+        datos_limpios = datos.copy()
+        self.estadisticas = {
+            'textos_procesados': len(datos),
+            'urls_removidas': 0,
+            'emails_removidos': 0,
+            'menciones_removidas': 0,
+            'hashtags_removidos': 0,
+            'telefonos_removidos': 0,
+            'caracteres_especiales_removidos': 0,
+            'puntuacion_normalizada': 0,
+            'mayusculas_normalizadas': 0,
+            'espacios_normalizados': 0,
+            'palabras_corregidas': 0,
+            'textos_con_correcciones': 0,
+            'textos_modificados': 0,
+            'emojis_convertidos': 0
+        }
+        
+        textos_originales = datos['texto'].copy()
+        
+        print("🧹 Iniciando limpieza robusta con corrección ortográfica...")
+        print(f"📊 Procesando {len(datos)} textos...")
+        
+        ejemplos_correcciones = []  # Para mostrar ejemplos
+        
+        for idx, texto in enumerate(datos_limpios['texto']):
+            if (idx + 1) % 50 == 0:  # Progreso cada 50 textos
+                print(f"📊 Procesando texto {idx+1}/{len(datos_limpios)}...")
+            
+            texto_original = str(texto)
+            texto_limpio, correcciones = self.limpiar_texto_completo(texto_original)
+            
+            # Contar estadísticas
+            if correcciones > 0:
+                self.estadisticas['palabras_corregidas'] += correcciones
+                self.estadisticas['textos_con_correcciones'] += 1
+                
+                # Guardar ejemplo para el reporte
+                if len(ejemplos_correcciones) < 5 and texto_original != texto_limpio:
+                    ejemplos_correcciones.append({
+                        'original': texto_original[:100] + ('...' if len(texto_original) > 100 else ''),
+                        'corregido': texto_limpio[:100] + ('...' if len(texto_limpio) > 100 else '')
+                    })
+            
+            # Contar otros elementos procesados
+            self.estadisticas['urls_removidas'] += len(re.findall(self.regex_patterns['urls'], texto_original))
+            self.estadisticas['emails_removidos'] += len(re.findall(self.regex_patterns['emails'], texto_original))
+            
+            # Contar emojis convertidos
+            for emoji in self.emoji_to_text.keys():
+                if emoji in texto_original:
+                    self.estadisticas['emojis_convertidos'] += texto_original.count(emoji)
+            
+            # Actualizar el texto si fue modificado
+            if texto_limpio != texto_original:
+                datos_limpios.loc[idx, 'texto'] = texto_limpio
+                self.estadisticas['textos_modificados'] += 1
+        
+        # Conservar textos originales para comparación
+        if 'texto_pre_limpieza' not in datos_limpios.columns:
+            datos_limpios['texto_pre_limpieza'] = textos_originales
+        
+        # Guardar ejemplos en estadísticas
+        self.estadisticas['ejemplos_correcciones'] = ejemplos_correcciones
+        
+        print("✅ Limpieza robusta completada!")
+        print(f"✏️ Se corrigieron {self.estadisticas['palabras_corregidas']} palabras en {self.estadisticas['textos_con_correcciones']} textos")
+        print(f"😊 Se convirtieron {self.estadisticas['emojis_convertidos']} emojis a texto")
+        
+        return True, "Limpieza robusta con corrección ortográfica completada exitosamente", datos_limpios, self.estadisticas
+    
+    def generar_reporte_limpieza(self):
+        """Genera un reporte detallado de la limpieza realizada CON EJEMPLOS DE CORRECCIÓN"""
+        if not self.estadisticas:
+            return "No se ha ejecutado ninguna limpieza aún."
+        
+        total_elementos_procesados = (
+            self.estadisticas['palabras_corregidas'] +
+            self.estadisticas['urls_removidas'] +
+            self.estadisticas['emails_removidos'] +
+            self.estadisticas['emojis_convertidos']
+        )
+        
+        reporte = "🧹 REPORTE DE LIMPIEZA ROBUSTA CON CORRECCIÓN ORTOGRÁFICA\n"
+        reporte += "=" * 80 + "\n"
+        reporte += f"📊 ESTADÍSTICAS GENERALES:\n"
+        reporte += f"   • Textos procesados: {self.estadisticas['textos_procesados']:,}\n"
+        reporte += f"   • Textos modificados: {self.estadisticas['textos_modificados']:,}\n"
+        reporte += f"   • Porcentaje modificado: {(self.estadisticas['textos_modificados']/self.estadisticas['textos_procesados']*100):.1f}%\n"
+        reporte += f"   • Total de elementos procesados: {total_elementos_procesados:,}\n\n"
+        
+        # SECCIÓN DE CORRECCIÓN ORTOGRÁFICA
+        reporte += f"✏️ CORRECCIÓN ORTOGRÁFICA:\n"
+        reporte += f"   📝 Palabras corregidas: {self.estadisticas['palabras_corregidas']:,}\n"
+        reporte += f"   📄 Textos con correcciones: {self.estadisticas['textos_con_correcciones']:,}\n"
+        if self.estadisticas['textos_con_correcciones'] > 0:
+            promedio = self.estadisticas['palabras_corregidas'] / self.estadisticas['textos_con_correcciones']
+            reporte += f"   📊 Promedio correcciones por texto: {promedio:.1f}\n"
+        
+        # EJEMPLOS DE CORRECCIONES
+        if 'ejemplos_correcciones' in self.estadisticas and self.estadisticas['ejemplos_correcciones']:
+            reporte += f"\n💡 EJEMPLOS DE CORRECCIONES REALIZADAS:\n"
+            for i, ejemplo in enumerate(self.estadisticas['ejemplos_correcciones'][:3], 1):
+                reporte += f"   {i}. Original: {ejemplo['original']}\n"
+                reporte += f"      Corregido: {ejemplo['corregido']}\n"
+        
+        reporte += f"\n🔧 OTROS ELEMENTOS PROCESADOS:\n"
+        reporte += f"   🔍 URLs removidas: {self.estadisticas['urls_removidas']:,}\n"
+        reporte += f"   📧 Emails removidos: {self.estadisticas['emails_removidos']:,}\n"
+        reporte += f"   😊 Emojis convertidos: {self.estadisticas['emojis_convertidos']:,}\n"
+        
+        reporte += f"\n✅ BENEFICIOS DE LA LIMPIEZA:\n"
+        reporte += f"   • Ortografía corregida automáticamente\n"
+        reporte += f"   • Texto más legible y profesional\n"
+        reporte += f"   • Emojis convertidos a texto descriptivo\n"
+        reporte += f"   • Información personal protegida\n"
+        reporte += f"   • Datos optimizados para análisis\n"
+        reporte += f"   • Mejor calidad para exportación\n"
+        
+        return reporte
+
+
+class AnalizadorSentimientosGUI:
+    def __init__(self):
+        self.logica = AnalizadorLogica()
+        self.limpiador_robusto = LimpiadorDatosRobusto()
+        self.correcciones_aplicadas = False
+        self.analisis_completado = False
+        self.limpieza_robusta_aplicada = False
+        self.setup_gui()
+
+    def setup_gui(self):
+        self.ventana = tk.Tk()
+        self.ventana.title("✨ Analizador de Sentimientos Profesional ")
+        self.ventana.geometry("1350x950")
+        self.ventana.minsize(1200, 800)  # Tamaño mínimo para evitar problemas
+        
+        # Esquema de colores profesional - Clean White Theme
+        self.colores = {
+            'bg_primary': '#ffffff',      # Fondo principal blanco
+            'bg_secondary': '#f8fafc',    # Fondo secundario gris muy claro
+            'bg_card': '#ffffff',         # Tarjetas blancas
+            'bg_input': '#f1f5f9',        # Campos de entrada
+            'bg_hover': '#f1f5f9',        # Hover suave
+            'text_primary': '#0f172a',    # Texto principal negro
+            'text_secondary': '#475569',  # Texto secundario gris
+            'text_muted': '#64748b',      # Texto atenuado
+            'accent_blue': '#2563eb',     # Azul profesional
+            'accent_blue_hover': '#1d4ed8', # Azul hover
+            'accent_green': '#059669',    # Verde éxito
+            'accent_orange': '#d97706',   # Naranja advertencia
+            'accent_red': '#dc2626',      # Rojo error
+            'accent_purple': '#7c3aed',   # Púrpura para limpieza
+            'accent_purple_hover': '#6d28d9', # Púrpura hover
+            'border': '#e2e8f0',          # Bordes suaves
+            'border_focus': '#3b82f6',    # Borde en foco
+            'shadow': 'rgba(0,0,0,0.1)'   # Sombras suaves
+        }
+        self.ventana.configure(bg=self.colores['bg_primary'])
+
+        # Estilos personalizados
+        style = ttk.Style()
+        style.theme_use('default')
+        self.configurar_estilos_ttk(style)
+
+        # === CONFIGURACIÓN MEJORADA DEL SCROLL ===
+        self.setup_scroll_container()
+        
+        # === Construir toda la interfaz ===
+        self.crear_interfaz_completa()
+
+    def setup_scroll_container(self):
+        """Configura el contenedor de scroll mejorado"""
+        # Frame principal que contiene todo
+        self.main_container = tk.Frame(self.ventana, bg=self.colores['bg_primary'])
+        self.main_container.pack(fill='both', expand=True)
+        
+        # Canvas para el scroll
+        self.canvas = tk.Canvas(
+            self.main_container, 
+            bg=self.colores['bg_primary'], 
+            highlightthickness=0,
+            relief='flat',
+            bd=0
+        )
+        
+        # Scrollbar vertical mejorada
+        self.v_scrollbar = tk.Scrollbar(
+            self.main_container, 
+            orient="vertical", 
+            command=self.canvas.yview,
+            bg=self.colores['bg_secondary'],
+            troughcolor=self.colores['bg_input'],
+            activebackground=self.colores['accent_blue'],
+            width=16
+        )
+        
+        # Frame que contendrá todo el contenido
+        self.scrollable_frame = tk.Frame(self.canvas, bg=self.colores['bg_primary'])
+        
+        # Configurar el frame dentro del canvas
+        self.canvas_window = self.canvas.create_window(
+            (0, 0), 
+            window=self.scrollable_frame, 
+            anchor="nw"
+        )
+        
+        # Configurar scroll
+        self.canvas.configure(yscrollcommand=self.v_scrollbar.set)
+        
+        # Empaquetar elementos
+        self.v_scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        
+        # Configurar eventos de scroll
+        self.configurar_eventos_scroll()
+        
+        # Configurar actualización automática del scroll
+        self.configurar_actualizacion_scroll()
+
+    def configurar_eventos_scroll(self):
+        """Configura los eventos de scroll del mouse"""
+        def _on_mousewheel(event):
+            # Verificar si el canvas puede hacer scroll
+            if self.canvas.bbox("all"):
+                self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def _on_mousewheel_linux_up(event):
+            if self.canvas.bbox("all"):
+                self.canvas.yview_scroll(-1, "units")
+                
+        def _on_mousewheel_linux_down(event):
+            if self.canvas.bbox("all"):
+                self.canvas.yview_scroll(1, "units")
+        
+        # Bind a todo el canvas y frame
+        self.canvas.bind_all("<MouseWheel>", _on_mousewheel)  # Windows
+        self.canvas.bind_all("<Button-4>", _on_mousewheel_linux_up)  # Linux up
+        self.canvas.bind_all("<Button-5>", _on_mousewheel_linux_down)  # Linux down
+        
+        # También bind al frame scrollable
+        self.scrollable_frame.bind_all("<MouseWheel>", _on_mousewheel)
+        self.scrollable_frame.bind_all("<Button-4>", _on_mousewheel_linux_up)
+        self.scrollable_frame.bind_all("<Button-5>", _on_mousewheel_linux_down)
+
+    def configurar_actualizacion_scroll(self):
+        """Configura la actualización automática del scroll"""
+        def configure_scroll(event=None):
+            # Actualizar el tamaño del canvas window
+            canvas_width = self.canvas.winfo_width()
+            self.canvas.itemconfig(self.canvas_window, width=canvas_width)
+            
+            # Actualizar scroll region
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        
+        # Bind para cuando cambie el tamaño del canvas
+        self.canvas.bind('<Configure>', configure_scroll)
+        
+        # Bind para cuando cambie el contenido del frame
+        def update_scroll_region(event=None):
+            self.canvas.update_idletasks()
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        
+        self.scrollable_frame.bind('<Configure>', update_scroll_region)
+        
+        # Actualización inicial después de que se cree todo
+        def initial_update():
+            self.canvas.update_idletasks()
+            configure_scroll()
+            update_scroll_region()
+        
+        self.ventana.after(100, initial_update)
+
+    def crear_interfaz_completa(self):
+        """Crea toda la interfaz dentro del frame scrollable"""
+        # Container principal con padding
+        main_content = tk.Frame(self.scrollable_frame, bg=self.colores['bg_primary'])
+        main_content.pack(fill='both', expand=True, padx=40, pady=30)
+        
+        # Header profesional mejorado
+        self.crear_header_profesional(main_content)
+        
+        # Separador elegante
+        self.crear_separador(main_content)
+        
+        # Panel de controles profesional ampliado
+        self.crear_panel_controles_ampliado(main_content)
+        
+        # Panel de información dual mejorado
+        self.crear_panel_informacion_mejorado(main_content)
+        
+        # Área de resultados premium
+        self.crear_area_resultados_premium(main_content)
+        
+        # Footer con progreso profesional
+        self.crear_footer_profesional(main_content)
+        
+        # Actualizar scroll después de crear todo
+        self.ventana.after(200, lambda: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+
+    def configurar_estilos_ttk(self, style):
+        """Configura estilos TTK profesionales"""
+        # Notebook elegante
+        style.configure('Professional.TNotebook', 
+                       background=self.colores['bg_primary'], 
+                       borderwidth=0,
+                       tabmargins=[2, 5, 2, 0])
+        style.configure('Professional.TNotebook.Tab',
+                       background=self.colores['bg_input'],
+                       foreground=self.colores['text_secondary'],
+                       padding=[25, 12],
+                       focuscolor='none',
+                       font=('Segoe UI', 10, 'normal'))
+        style.map('Professional.TNotebook.Tab',
+                 background=[('selected', self.colores['accent_blue']),
+                           ('active', self.colores['bg_hover'])],
+                 foreground=[('selected', 'white'),
+                           ('active', self.colores['text_primary'])])
+        
+        # Progressbar profesional
+        style.configure('Professional.Horizontal.TProgressbar',
+                       background=self.colores['accent_blue'],
+                       troughcolor=self.colores['bg_input'],
+                       borderwidth=0,
+                       lightcolor=self.colores['accent_blue'],
+                       darkcolor=self.colores['accent_blue'],
+                       relief='flat')
+
+    def crear_header_profesional(self, parent):
+        """Crea un header profesional y elegante mejorado"""
+        header_container = tk.Frame(parent, bg=self.colores['bg_primary'])
+        header_container.pack(fill='x', pady=(0, 25))
+        
+        # Logo y título
+        title_frame = tk.Frame(header_container, bg=self.colores['bg_primary'])
+        title_frame.pack(fill='x')
+        
+        # Título principal con gradiente visual
+        title_container = tk.Frame(title_frame, bg=self.colores['bg_primary'])
+        title_container.pack(anchor='w')
+        
+        main_title = tk.Label(
+            title_container,
+            text="✨ Analizador de Sentimientos",
+            font=('Segoe UI', 32, 'bold'),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary']
+        )
+        main_title.pack(side='left')
+        
+        # Subtítulo profesional mejorado
+        subtitle = tk.Label(
+            title_frame,
+            text="Análisis Inteligente de Emociones • Procesamiento Avanzado de Lenguaje Natural • Corrección Ortográfica Automática",
+            font=('Segoe UI', 12),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_secondary']
+        )
+        subtitle.pack(anchor='w', pady=(8, 0))
+        
+        # Badge de funcionalidades
+        badge_container = tk.Frame(title_frame, bg=self.colores['bg_primary'])
+        badge_container.pack(anchor='w', pady=(5, 0))
+        
+        if SPELLCHECKER_DISPONIBLE:
+            spell_badge = tk.Label(
+                badge_container,
+                text="✏️ Corrector ortográfico",
+                font=('Segoe UI', 9, 'bold'),
+                bg=self.colores['accent_green'],
+                fg='white',
+                padx=10,
+                pady=3
+            )
+            spell_badge.pack(side='left', padx=(0, 5))
+        
+        clean_badge = tk.Label(
+            badge_container,
+            text="🧹 Limpiador Robusto",
+            font=('Segoe UI', 9, 'bold'),
+            bg=self.colores['accent_purple'],
+            fg='white',
+            padx=10,
+            pady=3
+        )
+        clean_badge.pack(side='left', padx=(0, 5))
+        
+        # NUEVOS BADGES PARA VADER Y NAIVE BAYES
+        if VADER_DISPONIBLE:
+            vader_badge = tk.Label(
+                badge_container,
+                text="⚡ VADER",
+                font=('Segoe UI', 9, 'bold'),
+                bg='#8B4513',
+                fg='white',
+                padx=10,
+                pady=3
+            )
+            vader_badge.pack(side='left', padx=(0, 5))
+        
+        if SKLEARN_DISPONIBLE:
+            nb_badge = tk.Label(
+                badge_container,
+                text="📊 Naive Bayes",
+                font=('Segoe UI', 9, 'bold'),
+                bg='#2F4F4F',
+                fg='white',
+                padx=10,
+                pady=3
+            )
+            nb_badge.pack(side='left', padx=(0, 5))
+
+    def crear_separador(self, parent):
+        """Crea un separador elegante"""
+        separator = tk.Frame(parent, height=2, bg=self.colores['border'])
+        separator.pack(fill='x', pady=(0, 30))
+
+    def crear_panel_controles_ampliado(self, parent):
+        """Crea panel de controles profesional ampliado con limpieza robusta post-análisis"""
+        controls_container = tk.Frame(parent, bg=self.colores['bg_primary'])
+        controls_container.pack(fill='x', pady=(0, 30))
+        
+        # Título de sección
+        section_title = tk.Label(
+            controls_container,
+            text="🎛️ Panel de Control Avanzado",
+            font=('Segoe UI', 16, 'bold'),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary']
+        )
+        section_title.pack(anchor='w', pady=(0, 15))
+        
+        # Container de botones con grid ampliado (2 filas)
+        buttons_grid = tk.Frame(controls_container, bg=self.colores['bg_primary'])
+        buttons_grid.pack(fill='x')
+        
+        # Configurar grid para 2 filas y 3 columnas
+        for i in range(3):
+            buttons_grid.columnconfigure(i, weight=1)
+        
+        # Primera fila de botones
+        self.crear_boton_profesional(buttons_grid, "📁 Cargar Archivo", 
+                                    "Importar datos para análisis", 
+                                    self.cargar_archivo, 0, 0)
+        
+        self.crear_boton_profesional(buttons_grid, "🔍 Analizar", 
+                                    "Procesar sentimientos", 
+                                    self.analizar_sentimientos, 1, 0, 
+                                    state='disabled')
+        
+        self.crear_boton_profesional(buttons_grid, "🧹 Limpiar Datos", 
+                                    "Corrección ortográfica y limpieza", 
+                                    self.limpiar_datos_robusto, 2, 0, 
+                                    state='disabled', color='purple')
+        
+        # Segunda fila de botones
+        self.crear_boton_profesional(buttons_grid, "💾 Exportar", 
+                                    "Guardar resultados limpios", 
+                                    self.exportar_resultados, 0, 1, 
+                                    state='disabled', color='green')
+        
+        self.crear_boton_profesional(buttons_grid, "📊 Visualizar", 
+                                    "Mostrar gráficos avanzados", 
+                                    self.mostrar_graficos, 1, 1, 
+                                    state='disabled', color='orange')
+        
+        self.crear_boton_profesional(buttons_grid, "🔄 Resetear", 
+                                    "Limpiar y comenzar de nuevo", 
+                                    self.resetear_analisis, 2, 1, 
+                                    state='disabled', color='red')
+
+    def crear_boton_profesional(self, parent, titulo, descripcion, comando, col, row, color='blue', **kwargs):
+        """Crea un botón con diseño profesional y descripción con colores personalizables"""
+        # Container principal
+        btn_container = tk.Frame(parent, bg=self.colores['bg_primary'])
+        btn_container.grid(row=row, column=col, padx=12, pady=10, sticky="ew")
+        
+        # Card del botón
+        card = tk.Frame(
+            btn_container,
+            bg=self.colores['bg_card'],
+            relief='solid',
+            bd=1,
+            highlightbackground=self.colores['border'],
+            highlightthickness=1
+        )
+        card.pack(fill='both', expand=True)
+        
+        # Seleccionar colores según el tipo
+        color_map = {
+            'blue': (self.colores['accent_blue'], self.colores['accent_blue_hover']),
+            'purple': (self.colores['accent_purple'], self.colores['accent_purple_hover']),
+            'green': (self.colores['accent_green'], '#047857'),
+            'orange': (self.colores['accent_orange'], '#b45309'),
+            'red': (self.colores['accent_red'], '#b91c1c')
+        }
+        bg_color, hover_color = color_map.get(color, color_map['blue'])
+        
+        # Botón principal
+        main_btn = tk.Button(
+            card,
+            text=titulo,
+            command=comando,
+            font=('Segoe UI', 11, 'bold'),
+            bg=bg_color,
+            fg='white',
+            relief='flat',
+            bd=0,
+            padx=20,
+            pady=15,
+            cursor='hand2',
+            activebackground=hover_color,
+            activeforeground='white',
+            **kwargs
+        )
+        main_btn.pack(fill='x', padx=15, pady=(15, 5))
+        
+        # Descripción
+        desc_label = tk.Label(
+            card,
+            text=descripcion,
+            font=('Segoe UI', 9),
+            bg=self.colores['bg_card'],
+            fg=self.colores['text_muted'],
+            wraplength=180
+        )
+        desc_label.pack(pady=(0, 15))
+        
+        # Efectos hover para la card completa
+        def on_enter_card(e):
+            if main_btn['state'] != 'disabled':
+                card.config(highlightbackground=self.colores['border_focus'])
+                main_btn.config(bg=hover_color)
+        
+        def on_leave_card(e):
+            if main_btn['state'] != 'disabled':
+                card.config(highlightbackground=self.colores['border'])
+                main_btn.config(bg=bg_color)
+        
+        card.bind("<Enter>", on_enter_card)
+        card.bind("<Leave>", on_leave_card)
+        main_btn.bind("<Enter>", on_enter_card)
+        main_btn.bind("<Leave>", on_leave_card)
+        
+        # Guardar referencias de botones
+        if 'Cargar' in titulo:
+            self.btn_cargar = main_btn
+        elif 'Analizar' in titulo:
+            self.btn_analizar = main_btn
+        elif 'Limpiar' in titulo:
+            self.btn_limpiar = main_btn
+        elif 'Exportar' in titulo:
+            self.btn_exportar = main_btn
+        elif 'Visualizar' in titulo:
+            self.btn_graficos = main_btn
+        elif 'Resetear' in titulo:
+            self.btn_resetear = main_btn
+
+    def crear_panel_informacion_mejorado(self, parent):
+        """Crea panel de información profesional mejorado"""
+        info_container = tk.Frame(parent, bg=self.colores['bg_primary'])
+        info_container.pack(fill='x', pady=(0, 30))
+        
+        # Título de sección
+        section_title = tk.Label(
+            info_container,
+            text="📊 Dashboard de Información del Proyecto",
+            font=('Segoe UI', 16, 'bold'),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary']
+        )
+        section_title.pack(anchor='w', pady=(0, 15))
+        
+        # Grid de información (3 columnas)
+        info_grid = tk.Frame(info_container, bg=self.colores['bg_primary'])
+        info_grid.pack(fill='x')
+        info_grid.columnconfigure(0, weight=1)
+        info_grid.columnconfigure(1, weight=1)
+        info_grid.columnconfigure(2, weight=1)
+        
+        # Card de información del archivo
+        self.crear_card_informacion_mejorada(info_grid, 0)
+        
+        # Card de estadísticas
+        self.crear_card_estadisticas_mejorada(info_grid, 1)
+        
+        # Card de limpieza robusta
+        self.crear_card_limpieza_robusta(info_grid, 2)
+
+    def crear_card_informacion_mejorada(self, parent, columna):
+        """Crea card de información del archivo mejorada"""
+        card = self.crear_card_base(parent, columna)
+        
+        # Header de la card con icono animado
+        header = tk.Frame(card, bg=self.colores['bg_card'])
+        header.pack(fill='x', pady=(20, 10), padx=25)
+        
+        icon_title = tk.Frame(header, bg=self.colores['bg_card'])
+        icon_title.pack(fill='x')
+        
+        # Icono con color dinámico
+        self.icon_archivo = tk.Label(
+            icon_title,
+            text="📄",
+            font=('Segoe UI', 20),
+            bg=self.colores['bg_card'],
+            fg=self.colores['text_secondary']
+        )
+        self.icon_archivo.pack(side='left', padx=(0, 10))
+        
+        tk.Label(
+            icon_title,
+            text="Archivo de Datos",
+            font=('Segoe UI', 14, 'bold'),
+            bg=self.colores['bg_card'],
+            fg=self.colores['text_primary']
+        ).pack(side='left', anchor='w')
+        
+        # Badge de estado
+        self.status_badge = tk.Label(
+            icon_title,
+            text="Esperando",
+            font=('Segoe UI', 8, 'bold'),
+            bg=self.colores['text_muted'],
+            fg='white',
+            padx=8,
+            pady=2
+        )
+        self.status_badge.pack(side='right')
+        
+        # Separador interno
+        sep = tk.Frame(card, height=1, bg=self.colores['border'])
+        sep.pack(fill='x', padx=25, pady=(0, 15))
+        
+        # Contenido
+        content = tk.Frame(card, bg=self.colores['bg_card'])
+        content.pack(fill='both', expand=True, padx=25, pady=(0, 20))
+        
+        self.info_archivo = tk.Label(
+            content,
+            text="📁 No hay archivo seleccionado\n• Selecciona un archivo de texto, CSV, Excel o Word\n• Formatos soportados: TXT, CSV, XLSX, DOCX, PDF\n• Tamaño máximo recomendado: 50MB\n• Corrección ortográfica automática disponible",
+            font=('Segoe UI', 11),
+            bg=self.colores['bg_card'],
+            fg=self.colores['text_secondary'],
+            justify='left',
+            wraplength=320
+        )
+        self.info_archivo.pack(anchor='w', fill='both')
+
+    def crear_card_estadisticas_mejorada(self, parent, columna):
+        """Crea card de estadísticas mejorada"""
+        card = self.crear_card_base(parent, columna)
+        
+        # Header de la card
+        header = tk.Frame(card, bg=self.colores['bg_card'])
+        header.pack(fill='x', pady=(20, 10), padx=25)
+        
+        icon_title = tk.Frame(header, bg=self.colores['bg_card'])
+        icon_title.pack(fill='x')
+        
+        tk.Label(
+            icon_title,
+            text="📈",
+            font=('Segoe UI', 20),
+            bg=self.colores['bg_card'],
+            fg=self.colores['accent_green']
+        ).pack(side='left', padx=(0, 10))
+        
+        tk.Label(
+            icon_title,
+            text="Métricas Avanzadas",
+            font=('Segoe UI', 14, 'bold'),
+            bg=self.colores['bg_card'],
+            fg=self.colores['text_primary']
+        ).pack(side='left', anchor='w')
+        
+        # Badge de análisis
+        self.analysis_badge = tk.Label(
+            icon_title,
+            text="Pendiente",
+            font=('Segoe UI', 8, 'bold'),
+            bg=self.colores['text_muted'],
+            fg='white',
+            padx=8,
+            pady=2
+        )
+        self.analysis_badge.pack(side='right')
+        
+        # Separador interno
+        sep = tk.Frame(card, height=1, bg=self.colores['border'])
+        sep.pack(fill='x', padx=25, pady=(0, 15))
+        
+        # Contenido
+        content = tk.Frame(card, bg=self.colores['bg_card'])
+        content.pack(fill='both', expand=True, padx=25, pady=(0, 20))
+        
+        self.stats_label = tk.Label(
+            content,
+            text="📊 Ejecuta el análisis para ver estadísticas\n• Distribución de sentimientos\n• Puntuaciones de confianza\n• Métricas de intensidad emocional\n• Análisis de correlaciones\n• Insights detallados",
+            font=('Segoe UI', 11),
+            bg=self.colores['bg_card'],
+            fg=self.colores['text_secondary'],
+            justify='left',
+            wraplength=320
+        )
+        self.stats_label.pack(anchor='w', fill='both')
+
+    def crear_card_limpieza_robusta(self, parent, columna):
+        """Crea card de información de limpieza robusta"""
+        card = self.crear_card_base(parent, columna)
+        
+        # Header de la card
+        header = tk.Frame(card, bg=self.colores['bg_card'])
+        header.pack(fill='x', pady=(20, 10), padx=25)
+        
+        icon_title = tk.Frame(header, bg=self.colores['bg_card'])
+        icon_title.pack(fill='x')
+        
+        self.icon_limpieza = tk.Label(
+            icon_title,
+            text="✏️",
+            font=('Segoe UI', 20),
+            bg=self.colores['bg_card'],
+            fg=self.colores['accent_purple']
+        )
+        self.icon_limpieza.pack(side='left', padx=(0, 10))
+        
+        tk.Label(
+            icon_title,
+            text="Corrección Ortográfica",
+            font=('Segoe UI', 14, 'bold'),
+            bg=self.colores['bg_card'],
+            fg=self.colores['text_primary']
+        ).pack(side='left', anchor='w')
+        
+        # Badge de limpieza
+        self.cleaning_badge = tk.Label(
+            icon_title,
+            text="Pendiente",
+            font=('Segoe UI', 8, 'bold'),
+            bg=self.colores['text_muted'],
+            fg='white',
+            padx=8,
+            pady=2
+        )
+        self.cleaning_badge.pack(side='right')
+        
+        # Separador interno
+        sep = tk.Frame(card, height=1, bg=self.colores['border'])
+        sep.pack(fill='x', padx=25, pady=(0, 15))
+        
+        # Contenido
+        content = tk.Frame(card, bg=self.colores['bg_card'])
+        content.pack(fill='both', expand=True, padx=25, pady=(0, 20))
+        
+        texto_limpieza = "✏️ Corrección automática de ortografía\n• Disponible tras completar análisis\n• 'me seto felis' → 'me siento feliz'\n• Conversión de emojis a texto\n• Limpieza de URLs y emails\n• Preservación del contexto emocional"
+        
+        self.limpieza_label = tk.Label(
+            content,
+            text=texto_limpieza,
+            font=('Segoe UI', 11),
+            bg=self.colores['bg_card'],
+            fg=self.colores['text_secondary'],
+            justify='left',
+            wraplength=320
+        )
+        self.limpieza_label.pack(anchor='w', fill='both')
+
+    def crear_card_base(self, parent, columna):
+        """Crea una card base profesional"""
+        card = tk.Frame(
+            parent,
+            bg=self.colores['bg_card'],
+            relief='solid',
+            bd=1,
+            highlightbackground=self.colores['border'],
+            highlightthickness=1
+        )
+        card.grid(row=0, column=columna, padx=10, pady=0, sticky="nsew")
+        return card
+
+    def crear_area_resultados_premium(self, parent):
+        """Crea área de resultados premium con scroll mejorado"""
+        results_container = tk.Frame(parent, bg=self.colores['bg_primary'])
+        results_container.pack(fill='both', expand=True, pady=(0, 25))
+        
+        # Título de sección
+        section_title = tk.Label(
+            results_container,
+            text="📋 Resultados del Análisis Avanzado",
+            font=('Segoe UI', 16, 'bold'),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary']
+        )
+        section_title.pack(anchor='w', pady=(0, 15))
+        
+        # Container de pestañas con altura fija para mejor scroll
+        tabs_container = tk.Frame(
+            results_container,
+            bg=self.colores['bg_secondary'],
+            relief='solid',
+            bd=1,
+            highlightbackground=self.colores['border'],
+            highlightthickness=1
+        )
+        tabs_container.pack(fill='both', expand=True)
+        
+        # Configurar altura mínima
+        tabs_container.configure(height=500)
+        
+        # Notebook profesional
+        self.notebook = ttk.Notebook(tabs_container, style='Professional.TNotebook')
+        self.notebook.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        # Crear pestañas premium mejoradas
+        self.crear_pestana_resumen_premium()
+        self.crear_pestana_datos_premium()
+        self.crear_pestana_limpieza_robusta()
+
+    def crear_pestana_resumen_premium(self):
+        """Crea pestaña de resumen premium con mejor scroll"""
+        resumen_frame = tk.Frame(self.notebook, bg=self.colores['bg_primary'])
+        self.notebook.add(resumen_frame, text="📋 Resumen Ejecutivo")
+        
+        # Container principal con configuración mejorada
+        main_container = tk.Frame(resumen_frame, bg=self.colores['bg_primary'])
+        main_container.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Frame para el texto y scrollbar
+        text_frame = tk.Frame(main_container, bg=self.colores['bg_primary'])
+        text_frame.pack(fill='both', expand=True)
+        
+        # Área de texto premium con mejor configuración
+        self.texto_resumen = tk.Text(
+            text_frame,
+            wrap='word',
+            font=('Segoe UI', 11),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary'],
+            relief='flat',
+            bd=0,
+            padx=15,
+            pady=15,
+            spacing1=4,
+            spacing2=2,
+            spacing3=1,
+            insertbackground=self.colores['text_primary'],
+            selectbackground=self.colores['accent_blue'],
+            selectforeground='white',
+            height=20
+        )
+        self.texto_resumen.pack(side='left', fill='both', expand=True)
+        
+        # Scrollbar más visible
+        scrollbar_resumen = tk.Scrollbar(
+            text_frame,
+            orient='vertical',
+            command=self.texto_resumen.yview,
+            bg=self.colores['bg_secondary'],
+            troughcolor=self.colores['bg_input'],
+            activebackground=self.colores['accent_blue'],
+            width=14
+        )
+        scrollbar_resumen.pack(side='right', fill='y', padx=(5, 0))
+        self.texto_resumen.config(yscrollcommand=scrollbar_resumen.set)
+        
+        # Texto inicial
+        self.mostrar_en_resumen("📋 RESUMEN EJECUTIVO\nAquí se mostrará un resumen completo del análisis una vez que cargues un archivo y ejecutes el análisis de sentimientos con corrección ortográfica automática.")
+
+    def crear_pestana_datos_premium(self):
+        """Crea pestaña de datos premium con mejor scroll"""
+        datos_frame = tk.Frame(self.notebook, bg=self.colores['bg_primary'])
+        self.notebook.add(datos_frame, text="📊 Datos Detallados")
+        
+        # Container principal
+        main_container = tk.Frame(datos_frame, bg=self.colores['bg_primary'])
+        main_container.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Frame para el texto y scrollbars
+        text_frame = tk.Frame(main_container, bg=self.colores['bg_primary'])
+        text_frame.pack(fill='both', expand=True)
+        
+        # Área de texto premium con scrolling horizontal y vertical
+        self.texto_datos = tk.Text(
+            text_frame,
+            wrap='none',
+            font=('Consolas', 10),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary'],
+            relief='flat',
+            bd=0,
+            padx=15,
+            pady=15,
+            insertbackground=self.colores['text_primary'],
+            selectbackground=self.colores['accent_blue'],
+            selectforeground='white',
+            height=20
+        )
+        self.texto_datos.grid(row=0, column=0, sticky='nsew')
+        
+        # Scrollbars
+        v_scrollbar = tk.Scrollbar(
+            text_frame,
+            orient='vertical',
+            command=self.texto_datos.yview,
+            bg=self.colores['bg_secondary'],
+            troughcolor=self.colores['bg_input'],
+            activebackground=self.colores['accent_blue'],
+            width=14
+        )
+        v_scrollbar.grid(row=0, column=1, sticky='ns')
+        self.texto_datos.config(yscrollcommand=v_scrollbar.set)
+        
+        h_scrollbar = tk.Scrollbar(
+            text_frame,
+            orient='horizontal',
+            command=self.texto_datos.xview,
+            bg=self.colores['bg_secondary'],
+            troughcolor=self.colores['bg_input'],
+            activebackground=self.colores['accent_blue']
+        )
+        h_scrollbar.grid(row=1, column=0, sticky='ew')
+        self.texto_datos.config(xscrollcommand=h_scrollbar.set)
+        
+        # Configurar expansión del grid
+        text_frame.rowconfigure(0, weight=1)
+        text_frame.columnconfigure(0, weight=1)
+        
+        # Texto inicial
+        self.mostrar_en_datos("📊 DATOS DETALLADOS\nAquí se mostrarán los datos detallados del análisis con todas las métricas calculadas y correcciones ortográficas aplicadas.")
+
+    def crear_pestana_limpieza_robusta(self):
+        """Crea pestaña específica para mostrar limpieza robusta"""
+        limpieza_frame = tk.Frame(self.notebook, bg=self.colores['bg_primary'])
+        self.notebook.add(limpieza_frame, text="✏️ Corrección Ortográfica")
+        
+        # Container principal
+        main_container = tk.Frame(limpieza_frame, bg=self.colores['bg_primary'])
+        main_container.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Frame para el texto y scrollbar
+        text_frame = tk.Frame(main_container, bg=self.colores['bg_primary'])
+        text_frame.pack(fill='both', expand=True)
+        
+        # Área de texto para limpieza robusta
+        self.texto_limpieza_robusta = tk.Text(
+            text_frame,
+            wrap='word',
+            font=('Segoe UI', 11),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary'],
+            relief='flat',
+            bd=0,
+            padx=15,
+            pady=15,
+            spacing1=4,
+            spacing2=2,
+            spacing3=1,
+            insertbackground=self.colores['text_primary'],
+            selectbackground=self.colores['accent_purple'],
+            selectforeground='white',
+            height=20
+        )
+        self.texto_limpieza_robusta.pack(side='left', fill='both', expand=True)
+        
+        # Scrollbar
+        scrollbar_limpieza = tk.Scrollbar(
+            text_frame,
+            orient='vertical',
+            command=self.texto_limpieza_robusta.yview,
+            bg=self.colores['bg_secondary'],
+            troughcolor=self.colores['bg_input'],
+            activebackground=self.colores['accent_purple'],
+            width=14
+        )
+        scrollbar_limpieza.pack(side='right', fill='y', padx=(5, 0))
+        self.texto_limpieza_robusta.config(yscrollcommand=scrollbar_limpieza.set)
+        
+        # Texto inicial
+        self.mostrar_en_limpieza_robusta("✏️ CORRECCIÓN ORTOGRÁFICA AUTOMÁTICA\n" + 
+                                         "Esta función estará disponible después de completar el análisis de sentimientos.\n" +
+                                         "📝 La corrección ortográfica incluye:\n" +
+                                         "• Corrección de palabras mal escritas: 'me seto felis' → 'me siento feliz'\n" +
+                                         "• Normalización de texto: 'estoi' → 'estoy'\n" +
+                                         "• Conversión de emojis a texto descriptivo\n" +
+                                         "• Eliminación de URLs y enlaces\n" +
+                                         "• Limpieza de direcciones de email\n" +
+                                         "• Normalización de caracteres especiales\n" +
+                                         "• Preservación del contexto emocional")
+
+    def crear_footer_profesional(self, parent):
+        """Crea footer profesional con progreso"""
+        footer_container = tk.Frame(parent, bg=self.colores['bg_primary'])
+        footer_container.pack(fill='x')
+        
+        # Separador superior
+        sep = tk.Frame(footer_container, height=1, bg=self.colores['border'])
+        sep.pack(fill='x', pady=(0, 20))
+        
+        # Container de progreso
+        progress_container = tk.Frame(footer_container, bg=self.colores['bg_primary'])
+        progress_container.pack(fill='x')
+        
+        # Label de estado
+        status_frame = tk.Frame(progress_container, bg=self.colores['bg_primary'])
+        status_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(
+            status_frame,
+            text="Estado del Sistema:",
+            font=('Segoe UI', 10, 'bold'),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary']
+        ).pack(side='left')
+        
+        self.progress_label = tk.Label(
+            status_frame,
+            text="🚀 Sistema listo - Corrección ortográfica automática disponible",
+            font=('Segoe UI', 10),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_secondary']
+        )
+        self.progress_label.pack(side='left', padx=(10, 0))
+        
+        # Barra de progreso profesional
+        self.progreso = ttk.Progressbar(
+            progress_container,
+            mode='determinate',
+            style='Professional.Horizontal.TProgressbar'
+        )
+        self.progreso.pack(fill='x', pady=(0, 5))
+
+    # Métodos de funcionalidad mejorados con corrección ortográfica
+    def cargar_archivo(self):
+        tipos_archivo = [
+            ("Archivos de Texto", "*.txt"),
+            ("Archivos CSV", "*.csv"),
+            ("Archivos Excel", "*.xlsx"),
+            ("Archivos Excel Legacy", "*.xls"),
+            ("Archivos JSON", "*.json"),
+            ("Archivos TSV", "*.tsv"),
+            ("Todos los archivos", "*.*")
+        ]
+        
+        if DOCX_DISPONIBLE:
+            tipos_archivo.insert(4, ("Archivos Word", "*.docx"))
+        if PDF_DISPONIBLE:
+            tipos_archivo.insert(-2, ("Archivos PDF", "*.pdf"))
+        
+        archivo = filedialog.askopenfilename(
+            title="Seleccionar archivo para análisis profesional",
+            filetypes=tipos_archivo
+        )
+        
+        if archivo:
+            self.progress_label.config(text="📂 Cargando y validando archivo...")
+            self.progreso.config(mode='indeterminate')
+            self.progreso.start()
+            self.ventana.update()
+            
+            def cargar():
+                exito, mensaje, cantidad = self.logica.cargar_archivo(archivo)
+                self.progreso.stop()
+                self.progreso.config(mode='determinate', value=0)
+                
+                if exito:
+                    self.progress_label.config(text="✅ Archivo cargado y validado correctamente")
+                    self.status_badge.config(text="Cargado", bg=self.colores['accent_green'])
+                    self.icon_archivo.config(fg=self.colores['accent_green'])
+                    
+                    nombre_archivo = os.path.basename(archivo)
+                    tamaño_kb = os.path.getsize(archivo) / 1024
+                    longitud_promedio = self.logica.datos['texto'].str.len().mean()
+                    
+                    info_text = f"📁 {nombre_archivo}\n"
+                    info_text += f"📄 Total de registros: {cantidad:,}\n"
+                    info_text += f"📏 Longitud promedio: {longitud_promedio:.0f} caracteres\n"
+                    info_text += f"💾 Tamaño del archivo: {tamaño_kb:.1f} KB\n"
+                    info_text += f"🎯 Estado: Listo para análisis\n"
+                    info_text += f"✏️ Corrección ortográfica disponible"
+                    
+                    self.info_archivo.config(text=info_text)
+                    
+                    preview = "📁 VISTA PREVIA DEL CONTENIDO\n"
+                    preview += "=" * 60 + "\n"
+                    preview += f"Mostrando los primeros 5 registros de {cantidad:,} total:\n"
+                    
+                    for i, texto in enumerate(self.logica.datos['texto'].head(5), 1):
+                        preview += f"📄 Registro {i}:\n"
+                        preview += f"   {texto[:150]}{'...' if len(texto) > 150 else ''}\n"
+                    
+                    preview += f"✅ Archivo procesado exitosamente y listo para análisis.\n"
+                    preview += f"✏️ La corrección ortográfica se aplicará durante la limpieza."
+                    
+                    self.mostrar_en_resumen(preview)
+                    
+                    self.btn_analizar.config(state='normal')
+                    self.btn_resetear.config(state='normal')
+                    
+                    # Actualizar scroll después de cambios
+                    self.ventana.after(100, self.actualizar_scroll)
+                    
+                else:
+                    self.progress_label.config(text="❌ Error al procesar el archivo")
+                    self.status_badge.config(text="Error", bg=self.colores['accent_red'])
+                    messagebox.showerror("Error de Carga", f"No se pudo cargar el archivo:\n{mensaje}")
+                
+                self.ventana.update()
+            
+            threading.Thread(target=cargar, daemon=True).start()
+
+    def analizar_sentimientos(self):
+        self.progress_label.config(text="🔍 Ejecutando análisis avanzado de sentimientos...")
+        self.progreso.config(mode='indeterminate')
+        self.progreso.start()
+        self.ventana.update()
+        
+        def analizar():
+            exito, mensaje = self.logica.analizar_sentimientos()
+            self.progreso.stop()
+            self.progreso.config(mode='determinate', value=100)
+            
+            if exito:
+                self.progress_label.config(text="✅ Análisis avanzado completado con éxito")
+                self.analysis_badge.config(text="Completado", bg=self.colores['accent_green'])
+                self.analisis_completado = True
+                
+                stats, resumen, datos = self.logica.generar_estadisticas()
+                self.stats_label.config(text=stats)
+                self.mostrar_en_resumen(resumen)
+                self.mostrar_en_datos(datos)
+                
+                # Habilitar botones post-análisis
+                self.btn_exportar.config(state='normal')
+                self.btn_graficos.config(state='normal')
+                self.btn_limpiar.config(state='normal')  # Habilitar limpieza robusta
+                
+                # Actualizar información de limpieza
+                texto_limpieza_habilitada = "✏️ Corrección ortográfica disponible\n• Análisis completado exitosamente\n• 'me seto felis' → 'me siento feliz'\n• Conversión de emojis a texto\n• Limpieza de URLs y emails\n• Preservación del contexto emocional"
+                self.limpieza_label.config(text=texto_limpieza_habilitada)
+                self.cleaning_badge.config(text="Disponible", bg=self.colores['accent_blue'])
+                
+                # Actualizar scroll después de cambios
+                self.ventana.after(100, self.actualizar_scroll)
+                
+            else:
+                self.progress_label.config(text="❌ Error durante el análisis")
+                self.analysis_badge.config(text="Error", bg=self.colores['accent_red'])
+                messagebox.showerror("Error de Análisis", f"Error en el proceso:\n{mensaje}")
+            
+            self.progreso.config(value=0)
+            self.ventana.update()
+        
+        threading.Thread(target=analizar, daemon=True).start()
+
+    def limpiar_datos_robusto(self):
+        """Ejecuta la limpieza robusta CON CORRECCIÓN ORTOGRÁFICA"""
+        if not self.analisis_completado:
+            messagebox.showwarning("Análisis Requerido", 
+                                 "Debes completar el análisis de sentimientos antes de usar la corrección ortográfica.\n" +
+                                 "La corrección post-análisis permite preservar mejor el contexto emocional.")
+            return
+        
+        self.progress_label.config(text="✏️ Ejecutando corrección ortográfica y limpieza robusta...")
+        self.progreso.config(mode='indeterminate')
+        self.progreso.start()
+        self.ventana.update()
+        
+        def limpiar():
+            exito, mensaje, datos_limpios, estadisticas = self.limpiador_robusto.limpiar_datos_post_analisis(self.logica.datos)
+            self.progreso.stop()
+            self.progreso.config(mode='determinate', value=0)
+            
+            if exito:
+                self.progress_label.config(text="✅ Corrección ortográfica completada exitosamente")
+                self.cleaning_badge.config(text="Aplicado", bg=self.colores['accent_green'])
+                self.limpieza_robusta_aplicada = True
+                
+                # Actualizar datos en la lógica
+                self.logica.datos = datos_limpios
+                
+                # Actualizar información de limpieza
+                palabras_corregidas = estadisticas.get('palabras_corregidas', 0)
+                textos_corregidos = estadisticas.get('textos_con_correcciones', 0)
+                emojis_convertidos = estadisticas.get('emojis_convertidos', 0)
+                
+                limpieza_text = f"✏️ Corrección ortográfica aplicada\n"
+                limpieza_text += f"📝 Palabras corregidas: {palabras_corregidas:,}\n"
+                limpieza_text += f"📄 Textos corregidos: {textos_corregidos:,}\n"
+                limpieza_text += f"😊 Emojis convertidos: {emojis_convertidos:,}\n"
+                limpieza_text += f"🎯 Datos optimizados para exportación\n"
+                limpieza_text += f"✅ Contexto emocional preservado"
+                
+                self.limpieza_label.config(text=limpieza_text)
+                
+                # Generar reporte de limpieza para la pestaña
+                reporte_limpieza = self.limpiador_robusto.generar_reporte_limpieza()
+                self.mostrar_en_limpieza_robusta(reporte_limpieza)
+                
+                # Actualizar vista previa con datos limpios
+                preview_limpio = "✏️ DATOS PROCESADOS CON CORRECCIÓN ORTOGRÁFICA\n"
+                preview_limpio += "=" * 60 + "\n"
+                preview_limpio += f"Se corrigieron {palabras_corregidas:,} palabras en {textos_corregidos:,} textos.\n"
+                preview_limpio += "Mostrando los primeros 5 registros procesados:\n\n"
+                
+                for i, row in enumerate(self.logica.datos.head(5).itertuples(), 1):
+                    preview_limpio += f"📄 Registro {i} (corregido):\n"
+                    texto_actual = row.texto
+                    preview_limpio += f"   Actual: {texto_actual[:120]}{'...' if len(texto_actual) > 120 else ''}\n"
+                    
+                    if hasattr(row, 'texto_pre_limpieza'):
+                        texto_original = row.texto_pre_limpieza
+                        if texto_original != texto_actual:
+                            preview_limpio += f"   Original: {texto_original[:120]}{'...' if len(texto_original) > 120 else ''}\n"
+                    
+                    preview_limpio += "\n"
+                
+                preview_limpio += f"✅ Los datos han sido optimizados con corrección ortográfica.\n"
+                preview_limpio += f"🎯 Listos para exportación y análisis posterior.\n"
+                preview_limpio += f"📊 Calidad de datos mejorada significativamente."
+                
+                self.mostrar_en_resumen(preview_limpio)
+                
+                # Regenerar estadísticas con datos limpios
+                if hasattr(self.logica, 'resultados') and self.logica.resultados is not None:
+                    stats_actualizadas, resumen_actualizado, datos_actualizados = self.logica.generar_estadisticas()
+                    self.mostrar_en_datos(datos_actualizados)
+                
+                # Actualizar scroll después de cambios
+                self.ventana.after(100, self.actualizar_scroll)
+                
+                # Mostrar ejemplos si los hay
+                ejemplos_texto = ""
+                if 'ejemplos_correcciones' in estadisticas and estadisticas['ejemplos_correcciones']:
+                    ejemplos_texto = "\n\n💡 Ejemplos de correcciones realizadas:\n"
+                    for i, ejemplo in enumerate(estadisticas['ejemplos_correcciones'][:3], 1):
+                        ejemplos_texto += f"{i}. Original: {ejemplo['original']}\n"
+                        ejemplos_texto += f"   Corregido: {ejemplo['corregido']}\n"
+                
+                messagebox.showinfo("Corrección Completada", 
+                                  f"✅ Corrección ortográfica completada con éxito!\n\n" +
+                                  f"📝 Estadísticas de corrección:\n" +
+                                  f"• {palabras_corregidas:,} palabras corregidas\n" +
+                                  f"• {textos_corregidos:,} textos modificados\n" +
+                                  f"• {emojis_convertidos:,} emojis convertidos\n" +
+                                  f"• {estadisticas.get('urls_removidas', 0):,} URLs eliminadas\n" +
+                                  f"• {estadisticas.get('emails_removidos', 0):,} emails eliminados\n\n" +
+                                  f"🎯 Los datos están ahora corregidos y listos para exportación.\n" +
+                                  f"📈 La calidad de los datos ha mejorado significativamente." + ejemplos_texto)
+            else:
+                self.progress_label.config(text="❌ Error en la corrección ortográfica")
+                messagebox.showerror("Error de Corrección", f"Error durante la corrección ortográfica:\n{mensaje}")
+            
+            self.ventana.update()
+        
+        threading.Thread(target=limpiar, daemon=True).start()
+
+    def mostrar_graficos(self):
+        self.progress_label.config(text="📊 Generando visualizaciones avanzadas...")
+        self.progreso.config(mode='indeterminate')
+        self.progreso.start()
+        self.ventana.update()
+        
+        def mostrar():
+            self.logica.mostrar_graficos()
+            self.progreso.stop()
+            self.progreso.config(value=0)
+            self.progress_label.config(text="✅ Gráficos generados correctamente")
+            self.ventana.update()
+        
+        threading.Thread(target=mostrar, daemon=True).start()
+
+    def exportar_resultados(self):
+        archivo_salida = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[
+                ("Excel Profesional", "*.xlsx"),
+                ("CSV Datos", "*.csv"),
+                ("JSON Estructurado", "*.json"),
+                ("Reporte Texto", "*.txt")
+            ],
+            title="Exportar Resultados Corregidos del Análisis"
+        )
+        
+        if archivo_salida:
+            self.progress_label.config(text="💾 Exportando resultados con correcciones...")
+            self.progreso.config(mode='indeterminate')
+            self.progreso.start()
+            
+            def exportar():
+                exito, mensaje = self.logica.exportar_resultados(archivo_salida)
+                self.progreso.stop()
+                self.progreso.config(value=0)
+                
+                if exito:
+                    self.progress_label.config(text="✅ Exportación completada exitosamente")
+                    
+                    detalles_exportacion = f"✅ Resultados exportados correctamente:\n"
+                    detalles_exportacion += f"📁 {os.path.basename(archivo_salida)}\n"
+                    detalles_exportacion += f"📂 {os.path.dirname(archivo_salida)}\n\n"
+                    detalles_exportacion += f"📊 El archivo incluye:\n"
+                    detalles_exportacion += f"• Resultados completos del análisis de sentimientos\n"
+                    detalles_exportacion += f"• Métricas avanzadas y estadísticas detalladas\n"
+                    
+                    if self.limpieza_robusta_aplicada:
+                        detalles_exportacion += f"• Textos con corrección ortográfica aplicada\n"
+                        detalles_exportacion += f"• Comparación antes/después de corrección\n"
+                        detalles_exportacion += f"• Emojis convertidos a texto descriptivo\n"
+                    
+                    detalles_exportacion += f"• Información de procesamiento y calidad\n"
+                    detalles_exportacion += f"• Datos categorizados por tipo de sentimiento\n"
+                    detalles_exportacion += f"• Textos limpios y listos para uso profesional"
+                    
+                    messagebox.showinfo("Exportación Exitosa", detalles_exportacion)
+                else:
+                    self.progress_label.config(text="❌ Error en exportación")
+                    messagebox.showerror("Error de Exportación", f"Error al exportar:\n{mensaje}")
+                
+                self.ventana.update()
+            
+            threading.Thread(target=exportar, daemon=True).start()
+
+    def resetear_analisis(self):
+        """Resetea completamente el análisis"""
+        respuesta = messagebox.askyesno("Confirmar Reset", 
+                                      "¿Estás seguro de que quieres resetear todo el análisis?\n\n" +
+                                      "Se perderán:\n" +
+                                      "• Todos los datos cargados\n" +
+                                      "• Resultados del análisis\n" +
+                                      "• Correcciones ortográficas aplicadas\n" +
+                                      "• Configuraciones actuales")
+        
+        if respuesta:
+            # Resetear datos
+            self.logica.datos = None
+            self.logica.datos_originales = None
+            self.logica.resultados = None
+            if hasattr(self.logica, 'correcciones_realizadas'):
+                self.logica.correcciones_realizadas = {}
+            
+            # Resetear estados
+            self.correcciones_aplicadas = False
+            self.analisis_completado = False
+            self.limpieza_robusta_aplicada = False
+            
+            # Resetear limpiador
+            self.limpiador_robusto = LimpiadorDatosRobusto()
+            
+            # Resetear interfaz
+            self.info_archivo.config(text="📁 No hay archivo seleccionado\n• Selecciona un archivo de texto, CSV, Excel o Word\n• Formatos soportados: TXT, CSV, XLSX, DOCX, PDF\n• Tamaño máximo recomendado: 50MB\n• Corrección ortográfica automática disponible")
+            self.stats_label.config(text="📊 Ejecuta el análisis para ver estadísticas\n• Distribución de sentimientos\n• Puntuaciones de confianza\n• Métricas de intensidad emocional\n• Análisis de correlaciones\n• Insights detallados")
+            
+            limpieza_text_inicial = "✏️ Corrección automática de ortografía\n• Disponible tras completar análisis\n• 'me seto felis' → 'me siento feliz'\n• Conversión de emojis a texto\n• Limpieza de URLs y emails\n• Preservación del contexto emocional"
+            self.limpieza_label.config(text=limpieza_text_inicial)
+            
+            # Resetear badges
+            self.status_badge.config(text="Esperando", bg=self.colores['text_muted'])
+            self.analysis_badge.config(text="Pendiente", bg=self.colores['text_muted'])
+            self.cleaning_badge.config(text="Pendiente", bg=self.colores['text_muted'])
+            
+            # Resetear iconos
+            self.icon_archivo.config(fg=self.colores['text_secondary'])
+            self.icon_limpieza.config(text="✏️", fg=self.colores['accent_purple'])
+            
+            # Limpiar áreas de texto
+            self.mostrar_en_resumen("📋 RESUMEN EJECUTIVO\nAquí se mostrará un resumen completo del análisis una vez que cargues un archivo y ejecutes el análisis de sentimientos con corrección ortográfica automática.")
+            self.mostrar_en_datos("📊 DATOS DETALLADOS\nAquí se mostrarán los datos detallados del análisis con todas las métricas calculadas y correcciones ortográficas aplicadas.")
+            self.mostrar_en_limpieza_robusta("✏️ CORRECCIÓN ORTOGRÁFICA AUTOMÁTICA\nEsta función estará disponible después de completar el análisis de sentimientos.\n📝 La corrección ortográfica incluye:\n• Corrección de palabras mal escritas: 'me seto felis' → 'me siento feliz'\n• Normalización de texto: 'estoi' → 'estoy'\n• Conversión de emojis a texto descriptivo\n• Eliminación de URLs y enlaces\n• Limpieza de direcciones de email\n• Normalización de caracteres especiales\n• Preservación del contexto emocional")
+            
+            # Resetear botones
+            self.btn_analizar.config(state='disabled')
+            self.btn_limpiar.config(state='disabled')
+            self.btn_exportar.config(state='disabled')
+            self.btn_graficos.config(state='disabled')
+            self.btn_resetear.config(state='disabled')
+            
+            # Resetear barra de progreso y mensaje
+            self.progreso.config(value=0)
+            self.progress_label.config(text="🚀 Sistema reseteado - Corrección ortográfica automática disponible")
+            
+            # Actualizar scroll después de reset
+            self.ventana.after(100, self.actualizar_scroll)
+            
+            messagebox.showinfo("Reset Completado", 
+                              "✅ El sistema ha sido reseteado exitosamente.\n\n" +
+                              "🔄 Estado actual:\n" +
+                              "• Todas las configuraciones restauradas\n" +
+                              "• Memoria liberada completamente\n" +
+                              "• Sistema listo para nuevo análisis\n" +
+                              "• Corrección ortográfica disponible\n\n" +
+                              "📁 Puedes cargar un nuevo archivo para comenzar.")
+
+    def actualizar_scroll(self):
+        """Método para actualizar el scroll manualmente"""
+        self.canvas.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        
+        # Configurar el ancho del canvas window
+        canvas_width = self.canvas.winfo_width()
+        if canvas_width > 1:
+            self.canvas.itemconfig(self.canvas_window, width=canvas_width)
+
+    def mostrar_en_resumen(self, texto):
+        """Muestra texto en la pestaña de resumen y actualiza el scroll"""
+        self.texto_resumen.config(state='normal')
+        self.texto_resumen.delete(1.0, tk.END)
+        self.texto_resumen.insert(1.0, texto)
+        self.texto_resumen.config(state='disabled')
+        self.ventana.after(50, self.actualizar_scroll)
+
+    def mostrar_en_datos(self, texto):
+        """Muestra texto en la pestaña de datos y actualiza el scroll"""
+        self.texto_datos.config(state='normal')
+        self.texto_datos.delete(1.0, tk.END)
+        self.texto_datos.insert(1.0, texto)
+        self.texto_datos.config(state='disabled')
+        self.ventana.after(50, self.actualizar_scroll)
+
+    def mostrar_en_limpieza_robusta(self, texto):
+        """Muestra texto en la pestaña de limpieza robusta y actualiza el scroll"""
+        self.texto_limpieza_robusta.config(state='normal')
+        self.texto_limpieza_robusta.delete(1.0, tk.END)
+        self.texto_limpieza_robusta.insert(1.0, texto)
+        self.texto_limpieza_robusta.config(state='disabled')
+        self.ventana.after(50, self.actualizar_scroll)
+
+    def ejecutar(self):
+        """Ejecuta la aplicación principal"""
+        # Configuración final del scroll antes de mostrar
+        self.ventana.after(200, self.actualizar_scroll)
+        self.ventana.mainloop()
+
+
+if __name__ == "__main__":
+    print("✨ ANALIZADOR DE SENTIMIENTOS PROFESIONAL v3.0 CON CORRECCIÓN ORTOGRÁFICA")
+    print("=" * 80)
+    print("🚀 Inicializando interfaz profesional con corrección ortográfica...")
+    print("✏️ Sistema de corrección ortográfica automática integrado")
+    
+    # NUEVO: Mostrar información de VADER y Naive Bayes
+    if VADER_DISPONIBLE:
+        print("⚡ VADER Sentiment Analysis disponible")
+    else:
+        print("⚠️ VADER no disponible - Instala con: pip install nltk")
+    
+    if SKLEARN_DISPONIBLE:
+        print("📊 Naive Bayes (Bernoulli) disponible")
+    else:
+        print("⚠️ Naive Bayes no disponible - Instala con: pip install scikit-learn")
+    
+    if not verificar_dependencias():
+        print("\n❌ Error: Dependencias faltantes.")
+        print("   Instala los paquetes requeridos antes de continuar.")
+        exit(1)
+    
+    try:
+        app = AnalizadorSentimientosGUI()
+        print("✅ Interfaz cargada correctamente")
+        
+        if SPELLCHECKER_DISPONIBLE:
+            print("✏️ Sistema de corrección ortográfica disponible")
+            print("   📝 Ejemplos: 'me seto felis' → 'me siento feliz'")
+        else:
+            print("⚠️ Sistema de corrección ortográfica no disponible")
+            print("   Instala con: pip install pyspellchecker")
+        
+        print("🧹 Sistema de limpieza robusta con corrección ortográfica activado")
+        print("🎯 Iniciando aplicación avanzada...")
+        app.ejecutar()
+        
+    except Exception as e:
+        print(f"❌ Error crítico al iniciar la aplicación: {e}")
+        print("💡 Verifica que todas las dependencias estén instaladas correctamente.")
+        print("🔥 Dependencias requeridas: pandas numpy textblob matplotlib seaborn openpyxl xlrd")
+        print("🔥 Dependencias opcionales: python-docx PyPDF2 wordcloud nltk pyspellchecker")
