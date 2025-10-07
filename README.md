@@ -53,7 +53,21 @@ Una **suite avanzada de análisis de sentimientos** que compara múltiples algor
 
 - ✅ Python 3.8 o superior  
 - 💾 2GB de espacio libre (para modelos)  
-- 🌐 Conexión a internet (descarga de modelos preentrenados)  
+- 🌐 Conexión a internet (descarga de modelos preentrenados)
+
+### 🗂️ Estructura del Proyecto
+
+Analisis/
+│
+├── 📁 __pycache__/                 # Cache de Python (auto-generado)
+├── 📁 .venv/                       # Entorno virtual (opcional)
+│
+├── 📄 analysis.py                  # Clase principal del analizador
+├── 📄 analysis.txt                 # Documentación técnica del análisis
+├── 📄 main.py                      # Script principal de ejecución
+├── 📄 main.txt                     # Explicación del flujo principal
+├── 📄 requirements.txt             # Lista de dependencias
+└── 📄 README.md                    # Documentación del proyecto
 
 ### 📄 Contenido del `requirements.txt`
 
@@ -73,16 +87,4 @@ transformers>=4.25.0
 scikit-learn>=1.2.0
 nltk>=3.7
 torch>=2.0.0
-### 🗂️ Estructura del Proyecto`
 
-Analisis/
-│
-├── 📁 __pycache__/                 # Cache de Python (auto-generado)
-├── 📁 .venv/                       # Entorno virtual (opcional)
-│
-├── 📄 analysis.py                  # Clase principal del analizador
-├── 📄 analysis.txt                 # Documentación técnica del análisis
-├── 📄 main.py                      # Script principal de ejecución
-├── 📄 main.txt                     # Explicación del flujo principal
-├── 📄 requirements.txt             # Lista de dependencias
-└── 📄 README.md                    # Documentación del proyecto
