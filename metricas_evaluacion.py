@@ -1,9 +1,3 @@
-# metricas_evaluacion.py
-"""
-Módulo para calcular métricas de evaluación de modelos de clasificación
-Calcula: Exactitud, Precisión, Exhaustividad (Recall) y F1-Score
-"""
-
 import pandas as pd
 import numpy as np
 
