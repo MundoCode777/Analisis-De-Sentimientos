@@ -23,6 +23,31 @@ Una **suite avanzada de análisis de sentimientos** que compara múltiples algor
 
 ---
 
+## 🧮 Métricas de Evaluación Implementadas
+
+Para garantizar la **calidad y confiabilidad** de los modelos, el sistema calcula automáticamente las principales métricas de rendimiento:
+
+| Métrica | Icono | Descripción | Propósito |
+|---------|-------|-------------|-----------|
+| **Exactitud (Accuracy)** | 🎯 | Proporción de predicciones correctas sobre el total de casos | Evalúa el rendimiento general del modelo |
+| **Precisión (Precision)** | ⚖️ | Porcentaje de verdaderos positivos entre todas las predicciones positivas | Mide qué tan confiables son las predicciones positivas |
+| **Recall (Sensibilidad)** | 🔁 | Porcentaje de verdaderos positivos detectados entre todos los casos reales positivos | Indica qué tan bien el modelo identifica emociones reales |
+| **F1-Score** | 🧩 | Media armónica entre precisión y recall | Proporciona una medida equilibrada del rendimiento global |
+
+### 📈 Métricas Adicionales Calculadas
+
+- **Matriz de Confusión**: Visualización detallada de aciertos y errores por clase
+- **Métricas por Clase**: Evaluación individual para cada sentimiento (positivo, negativo, neutral)
+- **Promedios Macro**: Sin ponderar por tamaño de clase
+- **Promedios Ponderados**: Considerando el desbalance de clases
+
+### 🔄 Tipos de Evaluación
+
+1. **✅ Evaluación Real**: Con etiquetas ground truth (cuando están disponibles)
+2. **📊 Evaluación Estimada**: Basada en análisis de confianza y distribución (cuando no hay etiquetas reales)
+
+---
+
 ### 📁 Formatos de Entrada Soportados
 
 - 📝 **Texto** (`.txt`)  
@@ -44,6 +69,7 @@ Una **suite avanzada de análisis de sentimientos** que compara múltiples algor
 - ✍️ Corrección ortográfica automática, sin afectar el tono emocional  
 - 📉 Visualización avanzada: gráficos comparativos, radar, etc.  
 - 💾 Exportación de resultados en múltiples formatos  
+- 📈 **Evaluación completa de métricas** de rendimiento del modelo
 
 ---
 
@@ -74,8 +100,4 @@ pysentimiento>=0.7.0
 transformers>=4.25.0
 scikit-learn>=1.2.0
 nltk>=3.7
-<<<<<<< HEAD
 torch>=2.0.0
-=======
-torch>=2.0.0
->>>>>>> 9971022 (Se agrego el README.md y requerimientos)
