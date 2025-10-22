@@ -1,4 +1,4 @@
-#main.py
+# main sin presentar las metricas en el dashboard.py
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import threading
@@ -7,6 +7,12 @@ import re
 
 # Importar lógica
 from analisis import AnalizadorSentimientos as AnalizadorLogica, verificar_dependencias
+
+# IMPORTAR EL MÓDULO DE LIMPIEZA ROBUSTA
+from limpieza_robusta import LimpiadorDatosRobusto
+
+# IMPORTAR EL MÓDULO DE MÉTRICAS
+from metricas_evaluacion import CalculadorMetricas, calcular_metricas_modelo
 
 # Dependencias opcionales
 DOCX_DISPONIBLE = False
@@ -38,429 +44,41 @@ try:
 except ImportError:
     TRANSFORMERS_DISPONIBLE = False
 
+# NUEVOS: VADER Y NAIVE BAYES
+try:
+    from nltk.sentiment.vader import SentimentIntensityAnalyzer
+    VADER_DISPONIBLE = True
+except ImportError:
+    VADER_DISPONIBLE = False
+
+try:
+    from sklearn.feature_extraction.text import CountVectorizer
+    from sklearn.naive_bayes import BernoulliNB
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import accuracy_score, classification_report
+    from sklearn.pipeline import Pipeline
+    SKLEARN_DISPONIBLE = True
+except ImportError:
+    SKLEARN_DISPONIBLE = False
+
 try:
     from spellchecker import SpellChecker
     SPELLCHECKER_DISPONIBLE = True
 except ImportError:
     pass
 
-# Clase para limpieza robusta de datos CON CORRECCIÓN ORTOGRÁFICA
-class LimpiadorDatosRobusto:
-    """Clase especializada para limpieza exhaustiva de datos de texto con corrección ortográfica"""        
-    def __init__(self):
-        # Diccionario de reemplazos para caracteres especiales y leetspeak
-        self.replacements = {
-            # Leetspeak básico
-            '@': 'a', '4': 'a', '∆': 'a',
-            '3': 'e', '€': 'e', 
-            '1': 'i', '!': 'i', '|': 'i',
-            '0': 'o', '°': 'o',
-            '5': 's', '$': 's', '§': 's',
-            '7': 't', '+': 't',
-            '8': 'b', 'ß': 'b',
-            '6': 'g', '9': 'g',
-            '2': 'z',
-            
-            # Caracteres especiales comunes
-            'ñ': 'n', 'Ñ': 'N',
-            'á': 'a', 'à': 'a', 'ä': 'a', 'â': 'a', 'ā': 'a', 'ă': 'a', 'ą': 'a',
-            'é': 'e', 'è': 'e', 'ë': 'e', 'ê': 'e', 'ē': 'e', 'ĕ': 'e', 'ę': 'e',
-            'í': 'i', 'ì': 'i', 'ï': 'i', 'î': 'i', 'ī': 'i', 'ĭ': 'i', 'į': 'i',
-            'ó': 'o', 'ò': 'o', 'ö': 'o', 'ô': 'o', 'ō': 'o', 'ŏ': 'o', 'ő': 'o',
-            'ú': 'u', 'ù': 'u', 'ü': 'u', 'û': 'u', 'ū': 'u', 'ŭ': 'u', 'ů': 'u',
-            
-            # Mayúsculas con acentos
-            'Á': 'A', 'À': 'A', 'Ä': 'A', 'Â': 'A', 'Ā': 'A', 'Ă': 'A', 'Ą': 'A',
-            'É': 'E', 'È': 'E', 'Ë': 'E', 'Ê': 'E', 'Ē': 'E', 'Ĕ': 'E', 'Ę': 'E',
-            'Í': 'I', 'Ì': 'I', 'Ï': 'I', 'Î': 'I', 'Ī': 'I', 'Ĭ': 'I', 'Į': 'I',
-            'Ó': 'O', 'Ò': 'O', 'Ö': 'O', 'Ô': 'O', 'Ō': 'O', 'Ŏ': 'O', 'Ő': 'O',
-            'Ú': 'U', 'Ù': 'U', 'Ü': 'U', 'Û': 'U', 'Ū': 'U', 'Ŭ': 'U', 'Ů': 'U',
-            
-            # Caracteres raros y símbolos
-            '¿': '', '¡': '',
-            '«': '"', '»': '"',
-            '"': '"', '"': '"',
-            ''': "'", ''': "'",
-            '…': '...',
-            '–': '-', '—': '-',
-            '•': '-', '·': '-',
-            '°': 'o', '™': '', '®': '', '©': '',
-            '€': 'euros', '£': 'libras', '$': 'dolares',
-            '&': ' y ', '%': ' por ciento',
-        }
-        
-        # Patrones para diferentes tipos de "basura" en texto
-        self.regex_patterns = {
-            # URLs y enlaces
-            'urls': r'https?://[^\s]+|www\.[^\s]+|[^\s]+\.com[^\s]*|[^\s]+\.org[^\s]*|[^\s]+\.net[^\s]*',
-            # Emails
-            'emails': r'\S+@\S+\.\S+',
-            # Hashtags y menciones
-            'social': r'#\w+|@\w+',
-            # Números de teléfono
-            'phones': r'(\+?1?[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}',
-            # Códigos y IDs alfanuméricos
-            'codes': r'\b[A-Z0-9]{3,}-[A-Z0-9]{3,}\b|\b[A-Z]{2,}[0-9]{3,}\b',
-            # Múltiples espacios, tabs, saltos de línea
-            'whitespace': r'\s+',
-            # Múltiples signos de puntuación
-            'punct_multiple': r'[.]{3,}|[!]{2,}|[?]{2,}|[,]{2,}|[;]{2,}|[:-]{2,}',
-            # Caracteres de control y no imprimibles
-            'control_chars': r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]',
-            # HTML tags básicos
-            'html_tags': r'<[^>]+>|&nbsp;|&amp;|&lt;|&gt;|&quot;|&#\d+;',
-            # Repeticiones excesivas de caracteres
-            'char_repeat': r'([a-zA-Z])\1{3,}',
-            # Números largos sin contexto
-            'long_numbers': r'\b\d{10,}\b',
-        }
-        
-        # Palabras comunes mal escritas y sus correcciones
-        
-        self.common_misspellings = {
-            # Errores comunes en español
-            'q': 'que', 'x': 'por', 'xq': 'porque', 'pq': 'porque', 'xk': 'porque',
-            'tb': 'también', 'tmb': 'también', 'tbn': 'también',
-            'd': 'de', 'pa': 'para', 'pr': 'por',
-            'sta': 'esta', 'sto': 'esto', 'stoy': 'estoy',
-            'bn': 'bien', 'mj': 'mejor', 'mjr': 'mejor',
-            'salu2': 'saludos', 'bss': 'besos', 'bso': 'beso',
-            'grax': 'gracias', 'grcs': 'gracias', 'grc': 'gracias',
-            'wey': 'güey', 'we': 'güey', 'bro': 'hermano',
-            'k': 'que', 'ke': 'que', 'kien': 'quien',
-            'komo': 'como', 'kuando': 'cuando', 'kual': 'cual',
-            'aver': 'a ver', 'ablar': 'hablar', 'acer': 'hacer',
-            'dnd': 'donde', 'tmpo': 'tiempo', 'nmbr': 'nombre',
-            'msj': 'mensaje', 'msg': 'mensaje', 'txt': 'texto',
-            'fb': 'facebook', 'ig': 'instagram', 'tw': 'twitter',
-            'lol': 'risa', 'omg': 'dios mío', 'wtf': 'qué diablos',
-            
-            # ✅ Correcciones específicas que necesitas
-            'hpla': 'hola',
-            'felis': 'feliz',
-            'sentio': 'sentido',
-            'senti': 'siento',
-            'snt': 'siento',
-            'stoy': 'estoy',
-            'stas': 'estás',
-            'sta': 'está',
-            'q': 'que',
-            'xq': 'porque',
-            'x': 'por',
-            'k': 'que',
-            'kiero': 'quiero',
-            'keria': 'quería',
-            'ay': 'hay',
-            'ai': 'hay',
-            'all': 'ahí',
-            'ahi': 'ahí',
-            'ps': 'pues',
-            'pos': 'pues',
-            'pq': 'porque',
-            'Quiero': 'Quiero',
-            'queiro': 'quiero',
-            'sento': 'siento',
-            'quijero': 'quiero',
-                   
-            # Errores de escritura con números
-            'm8': 'mate', 'l8r': 'later', 'u2': 'you too',
-            '2morrow': 'mañana', '4ever': 'para siempre',
-            'b4': 'antes', '2day': 'hoy', '2night': 'esta noche',
-            
-            # Errores ortográficos comunes que quieres corregir
-            'seto': 'siento', 'felis': 'feliz', 'estoi': 'estoy',
-            'aser': 'hacer', 'ablar': 'hablar', 'tener': 'tener',
-            'saver': 'saber', 'bamos': 'vamos', 'benir': 'venir',
-            'aora': 'ahora', 'lla': 'ya', 'tambien': 'también',
-            'despues': 'después', 'facil': 'fácil', 'dificil': 'difícil'
-        }
-        
-        # Emojis y emoticonos a texto
-        self.emoji_to_text = {
-            '😀': ' feliz ', '😃': ' feliz ', '😄': ' feliz ', '😁': ' feliz ',
-            '😅': ' risa nerviosa ', '😂': ' risa ', '🤣': ' risa ',
-            '😊': ' sonrisa ', '😇': ' angelical ', '🙂': ' sonrisa leve ',
-            '😉': ' guiño ', '😌': ' aliviado ', '😍': ' enamorado ',
-            '😘': ' beso ', '😗': ' beso ', '😙': ' beso ', '😚': ' beso ',
-            '😋': ' delicioso ', '😛': ' lengua fuera ', '😜': ' guiño lengua ',
-            '🤪': ' loco ', '😝': ' lengua fuera ', '🤗': ' abrazo ',
-            '😏': ' picaro ', '😒': ' aburrido ', '🙄': ' ojos en blanco ',
-            '😬': ' nervioso ', '🤐': ' callado ', '😷': ' enfermo ',
-            '🤒': ' enfermo ', '🤕': ' herido ', '🤢': ' nauseas ',
-            '🤮': ' vomito ', '🤧': ' estornudo ', '😵': ' mareado ',
-            '😴': ' dormido ', '😪': ' somnoliento ', '😔': ' triste ',
-            '😟': ' preocupado ', '😕': ' confundido ', '🙁': ' triste ',
-            '😖': ' confundido ', '😣': ' perseverante ', '😞': ' decepcionado ',
-            '😓': ' sudor frio ', '😩': ' cansado ', '😫': ' cansado ',
-            '😤': ' enojado ', '😠': ' enojado ', '😡': ' furioso ',
-            '🤬': ' palabrotas ', '😈': ' diablillo ', '👿': ' demonio ',
-            '💀': ' muerte ', '☠️': ' calavera ', '👻': ' fantasma ',
-            '👽': ' alien ', '👾': ' monstruo ', '🤖': ' robot ',
-            '💩': ' caca ', '🤡': ' payaso ', '👹': ' ogro ',
-            '👺': ' duende ', '🔥': ' fuego ', '💯': ' cien por cien ',
-            '💢': ' enojado ', '💥': ' explosion ', '💫': ' mareado ',
-            '💦': ' gotas ', '💨': ' viento ', '🕳️': ' hoyo ',
-            '💣': ' bomba ', '💤': ' dormido ','👏👏': ' aplausos ', '👋': ' saludo ',
-            '❤️': ' amor ', '💔': ' corazon roto ','🇪🇨': 'bandera de Ecuador ','<3': ' amor ',
-
-            # Emoticonos texto
-            ':)': ' feliz ', ':-)': ' feliz ', '(:': ' feliz ',
-            ':D': ' muy feliz ', ':-D': ' muy feliz ', 'XD': ' risa ',
-            ':P': ' lengua fuera ', ':-P': ' lengua fuera ', ':p': ' lengua fuera ',
-            ';)': ' guiño ', ';-)': ' guiño ', ';P': ' guiño lengua ',
-            ':(': ' triste ', ':-(': ' triste ', ')=': ' triste ',
-            ":'(": ' llorando ', ':,(': ' llorando ', 'T_T': ' llorando ',
-            ':S': ' confundido ', ':-S': ' confundido ', ':s': ' confundido ',
-            ':O': ' sorprendido ', ':-O': ' sorprendido ', ':o': ' sorprendido ',
-            ':|': ' serio ', ':-|': ' serio ', '-_-': ' serio ',
-            ':@': ' enojado ', '>:(': ' enojado ', '>:-(': ' enojado ',
-            '<3': ' amor ', '</3': ' corazon roto ', '<\\3': ' corazon roto ',
-        }
-        
-        # NUEVAS VARIABLES para estadísticas
-        self.estadisticas = {}
-        
-        # Inicializar corrector ortográfico si está disponible
-        self.corrector_disponible = False
-        if SPELLCHECKER_DISPONIBLE:
-            try:
-                from spellchecker import SpellChecker
-                self.spell = SpellChecker(language='es')  # Español
-                self.corrector_disponible = True
-                print("✅ Corrector ortográfico español inicializado")
-            except Exception as e:
-                print(f"⚠️ Error al inicializar corrector: {e}")
-                self.corrector_disponible = False
-
-    def limpiar_texto_completo(self, texto):
-        """
-        Aplica todas las limpiezas a un texto individual
-        """
-        if not isinstance(texto, str):
-            texto = str(texto)
-        
-        texto_limpio = texto
-        correcciones_realizadas = 0
-        
-        # 1. CORRECCIÓN DE PALABRAS COMUNES MAL ESCRITAS (TU DICCIONARIO)
-        palabras = texto_limpio.split()
-        palabras_corregidas = []
-        
-        for palabra in palabras:
-            palabra_limpia = re.sub(r'[^\w]', '', palabra.lower())  # Quitar puntuación para comparar
-            
-            # Buscar en tu diccionario de errores comunes
-            if palabra_limpia in self.common_misspellings:
-                correccion = self.common_misspellings[palabra_limpia]
-                # Preservar mayúsculas originales
-                if palabra[0].isupper():
-                    correccion = correccion.capitalize()
-                # Reemplazar manteniendo puntuación
-                palabra_corregida = re.sub(r'\w+', correccion, palabra, count=1)
-                palabras_corregidas.append(palabra_corregida)
-                correcciones_realizadas += 1
-            else:
-                palabras_corregidas.append(palabra)
-        
-        texto_limpio = ' '.join(palabras_corregidas)
-        
-        # 2. CORRECCIÓN ORTOGRÁFICA CON SPELLCHECKER (si está disponible)
-        if self.corrector_disponible:
-            palabras_para_revisar = re.findall(r'\b\w+\b', texto_limpio.lower())
-            for palabra_original in palabras_para_revisar:
-                if len(palabra_original) > 2 and palabra_original not in self.spell:
-                    candidatos = self.spell.candidates(palabra_original)
-                    if candidatos:
-                        correccion = list(candidatos)[0]
-                        if palabra_original != correccion:
-                            # Reemplazar en el texto manteniendo mayúsculas
-                            patron = r'\b' + re.escape(palabra_original) + r'\b'
-                            def reemplazar_palabra(match):
-                                palabra_match = match.group()
-                                if palabra_match.isupper():
-                                    return correccion.upper()
-                                elif palabra_match.istitle():
-                                    return correccion.capitalize()
-                                else:
-                                    return correccion
-                            
-                            nuevo_texto = re.sub(patron, reemplazar_palabra, texto_limpio, flags=re.IGNORECASE)
-                            if nuevo_texto != texto_limpio:
-                                correcciones_realizadas += 1
-                                texto_limpio = nuevo_texto
-        
-        # 3. Reemplazar emojis y emoticonos
-        for emoji, texto_emoji in self.emoji_to_text.items():
-            if emoji in texto_limpio:
-                texto_limpio = texto_limpio.replace(emoji, texto_emoji)
-        
-        # 4. Aplicar reemplazos de caracteres especiales
-        for char, replacement in self.replacements.items():
-            texto_limpio = texto_limpio.replace(char, replacement)
-        
-        # 5. Limpiar URLs, emails, etc.
-        for pattern_name, pattern in self.regex_patterns.items():
-            if pattern_name == 'urls':
-                texto_limpio = re.sub(pattern, '[URL_REMOVIDA]', texto_limpio)
-            elif pattern_name == 'emails':
-                texto_limpio = re.sub(pattern, '[EMAIL_REMOVIDO]', texto_limpio)
-            elif pattern_name == 'social':
-                texto_limpio = re.sub(pattern, '[MENCION_REMOVIDA]', texto_limpio)
-            elif pattern_name == 'phones':
-                texto_limpio = re.sub(pattern, '[TELEFONO_REMOVIDO]', texto_limpio)
-            elif pattern_name == 'whitespace':
-                texto_limpio = re.sub(pattern, ' ', texto_limpio)
-            elif pattern_name == 'punct_multiple':
-                texto_limpio = re.sub(pattern, '.', texto_limpio)
-            elif pattern_name == 'control_chars':
-                texto_limpio = re.sub(pattern, '', texto_limpio)
-            elif pattern_name == 'html_tags':
-                texto_limpio = re.sub(pattern, '', texto_limpio)
-            elif pattern_name == 'char_repeat':
-                texto_limpio = re.sub(pattern, r'\1\1', texto_limpio)
-            elif pattern_name == 'long_numbers':
-                texto_limpio = re.sub(pattern, '[NUMERO_REMOVIDO]', texto_limpio)
-        
-        # Limpiar espacios extra
-        texto_limpio = re.sub(r'\s+', ' ', texto_limpio).strip()
-        
-        return texto_limpio, correcciones_realizadas
-
-    def limpiar_datos_post_analisis(self, datos):
-        """
-        Realiza una limpieza robusta de los datos después del análisis CON CORRECCIÓN ORTOGRÁFICA
-        """
-        import pandas as pd
-        
-        datos_limpios = datos.copy()
-        self.estadisticas = {
-            'textos_procesados': len(datos),
-            'urls_removidas': 0,
-            'emails_removidos': 0,
-            'menciones_removidas': 0,
-            'hashtags_removidos': 0,
-            'telefonos_removidos': 0,
-            'caracteres_especiales_removidos': 0,
-            'puntuacion_normalizada': 0,
-            'mayusculas_normalizadas': 0,
-            'espacios_normalizados': 0,
-            'palabras_corregidas': 0,
-            'textos_con_correcciones': 0,
-            'textos_modificados': 0,
-            'emojis_convertidos': 0
-        }
-        
-        textos_originales = datos['texto'].copy()
-        
-        print("🧹 Iniciando limpieza robusta con corrección ortográfica...")
-        print(f"📊 Procesando {len(datos)} textos...")
-        
-        ejemplos_correcciones = []  # Para mostrar ejemplos
-        
-        for idx, texto in enumerate(datos_limpios['texto']):
-            if (idx + 1) % 50 == 0:  # Progreso cada 50 textos
-                print(f"📊 Procesando texto {idx+1}/{len(datos_limpios)}...")
-            
-            texto_original = str(texto)
-            texto_limpio, correcciones = self.limpiar_texto_completo(texto_original)
-            
-            # Contar estadísticas
-            if correcciones > 0:
-                self.estadisticas['palabras_corregidas'] += correcciones
-                self.estadisticas['textos_con_correcciones'] += 1
-                
-                # Guardar ejemplo para el reporte
-                if len(ejemplos_correcciones) < 5 and texto_original != texto_limpio:
-                    ejemplos_correcciones.append({
-                        'original': texto_original[:100] + ('...' if len(texto_original) > 100 else ''),
-                        'corregido': texto_limpio[:100] + ('...' if len(texto_limpio) > 100 else '')
-                    })
-            
-            # Contar otros elementos procesados
-            self.estadisticas['urls_removidas'] += len(re.findall(self.regex_patterns['urls'], texto_original))
-            self.estadisticas['emails_removidos'] += len(re.findall(self.regex_patterns['emails'], texto_original))
-            
-            # Contar emojis convertidos
-            for emoji in self.emoji_to_text.keys():
-                if emoji in texto_original:
-                    self.estadisticas['emojis_convertidos'] += texto_original.count(emoji)
-            
-            # Actualizar el texto si fue modificado
-            if texto_limpio != texto_original:
-                datos_limpios.loc[idx, 'texto'] = texto_limpio
-                self.estadisticas['textos_modificados'] += 1
-        
-        # Conservar textos originales para comparación
-        if 'texto_pre_limpieza' not in datos_limpios.columns:
-            datos_limpios['texto_pre_limpieza'] = textos_originales
-        
-        # Guardar ejemplos en estadísticas
-        self.estadisticas['ejemplos_correcciones'] = ejemplos_correcciones
-        
-        print("✅ Limpieza robusta completada!")
-        print(f"✏️ Se corrigieron {self.estadisticas['palabras_corregidas']} palabras en {self.estadisticas['textos_con_correcciones']} textos")
-        print(f"😊 Se convirtieron {self.estadisticas['emojis_convertidos']} emojis a texto")
-        
-        return True, "Limpieza robusta con corrección ortográfica completada exitosamente", datos_limpios, self.estadisticas
-    
-    def generar_reporte_limpieza(self):
-        """Genera un reporte detallado de la limpieza realizada CON EJEMPLOS DE CORRECCIÓN"""
-        if not self.estadisticas:
-            return "No se ha ejecutado ninguna limpieza aún."
-        
-        total_elementos_procesados = (
-            self.estadisticas['palabras_corregidas'] +
-            self.estadisticas['urls_removidas'] +
-            self.estadisticas['emails_removidos'] +
-            self.estadisticas['emojis_convertidos']
-        )
-        
-        reporte = "🧹 REPORTE DE LIMPIEZA ROBUSTA CON CORRECCIÓN ORTOGRÁFICA\n"
-        reporte += "=" * 80 + "\n"
-        reporte += f"📊 ESTADÍSTICAS GENERALES:\n"
-        reporte += f"   • Textos procesados: {self.estadisticas['textos_procesados']:,}\n"
-        reporte += f"   • Textos modificados: {self.estadisticas['textos_modificados']:,}\n"
-        reporte += f"   • Porcentaje modificado: {(self.estadisticas['textos_modificados']/self.estadisticas['textos_procesados']*100):.1f}%\n"
-        reporte += f"   • Total de elementos procesados: {total_elementos_procesados:,}\n\n"
-        
-        # SECCIÓN DE CORRECCIÓN ORTOGRÁFICA
-        reporte += f"✏️ CORRECCIÓN ORTOGRÁFICA:\n"
-        reporte += f"   📝 Palabras corregidas: {self.estadisticas['palabras_corregidas']:,}\n"
-        reporte += f"   📄 Textos con correcciones: {self.estadisticas['textos_con_correcciones']:,}\n"
-        if self.estadisticas['textos_con_correcciones'] > 0:
-            promedio = self.estadisticas['palabras_corregidas'] / self.estadisticas['textos_con_correcciones']
-            reporte += f"   📊 Promedio correcciones por texto: {promedio:.1f}\n"
-        
-        # EJEMPLOS DE CORRECCIONES
-        if 'ejemplos_correcciones' in self.estadisticas and self.estadisticas['ejemplos_correcciones']:
-            reporte += f"\n💡 EJEMPLOS DE CORRECCIONES REALIZADAS:\n"
-            for i, ejemplo in enumerate(self.estadisticas['ejemplos_correcciones'][:3], 1):
-                reporte += f"   {i}. Original: {ejemplo['original']}\n"
-                reporte += f"      Corregido: {ejemplo['corregido']}\n"
-        
-        reporte += f"\n🔧 OTROS ELEMENTOS PROCESADOS:\n"
-        reporte += f"   🔍 URLs removidas: {self.estadisticas['urls_removidas']:,}\n"
-        reporte += f"   📧 Emails removidos: {self.estadisticas['emails_removidos']:,}\n"
-        reporte += f"   😊 Emojis convertidos: {self.estadisticas['emojis_convertidos']:,}\n"
-        
-        reporte += f"\n✅ BENEFICIOS DE LA LIMPIEZA:\n"
-        reporte += f"   • Ortografía corregida automáticamente\n"
-        reporte += f"   • Texto más legible y profesional\n"
-        reporte += f"   • Emojis convertidos a texto descriptivo\n"
-        reporte += f"   • Información personal protegida\n"
-        reporte += f"   • Datos optimizados para análisis\n"
-        reporte += f"   • Mejor calidad para exportación\n"
-        
-        return reporte
-
 
 class AnalizadorSentimientosGUI:
     def __init__(self):
         self.logica = AnalizadorLogica()
+        # INSTANCIAR EL LIMPIADOR ROBUSTO DESDE EL MÓDULO IMPORTADO
         self.limpiador_robusto = LimpiadorDatosRobusto()
+        # INSTANCIAR EL CALCULADOR DE MÉTRICAS
+        self.calculador_metricas = CalculadorMetricas()
         self.correcciones_aplicadas = False
         self.analisis_completado = False
         self.limpieza_robusta_aplicada = False
+        self.metricas_calculadas = False
         self.setup_gui()
 
     def setup_gui(self):
@@ -685,7 +303,7 @@ class AnalizadorSentimientosGUI:
         # Subtítulo profesional mejorado
         subtitle = tk.Label(
             title_frame,
-            text="Análisis Inteligente de Emociones • Procesamiento Avanzado de Lenguaje Natural • Corrección Ortográfica Automática",
+            text="Análisis Inteligente de Emociones • Procesamiento Avanzado de Lenguaje Natural • Corrección Ortográfica Automática • Evaluación de Métricas",
             font=('Segoe UI', 12),
             bg=self.colores['bg_primary'],
             fg=self.colores['text_secondary']
@@ -719,16 +337,42 @@ class AnalizadorSentimientosGUI:
         )
         clean_badge.pack(side='left', padx=(0, 5))
         
-        ortho_badge = tk.Label(
+        # NUEVOS BADGES PARA VADER Y NAIVE BAYES
+        if VADER_DISPONIBLE:
+            vader_badge = tk.Label(
+                badge_container,
+                text="⚡ VADER",
+                font=('Segoe UI', 9, 'bold'),
+                bg='#8B4513',
+                fg='white',
+                padx=10,
+                pady=3
+            )
+            vader_badge.pack(side='left', padx=(0, 5))
+        
+        if SKLEARN_DISPONIBLE:
+            nb_badge = tk.Label(
+                badge_container,
+                text="📊 Naive Bayes",
+                font=('Segoe UI', 9, 'bold'),
+                bg='#2F4F4F',
+                fg='white',
+                padx=10,
+                pady=3
+            )
+            nb_badge.pack(side='left', padx=(0, 5))
+        
+        # Badge para métricas
+        metrics_badge = tk.Label(
             badge_container,
-            text="📝 Auto Corrector",
+            text="📈 Métricas Avanzadas",
             font=('Segoe UI', 9, 'bold'),
-            bg=self.colores['accent_blue'],
+            bg='#7C3AED',
             fg='white',
             padx=10,
             pady=3
         )
-        ortho_badge.pack(side='left')
+        metrics_badge.pack(side='left', padx=(0, 5))
 
     def crear_separador(self, parent):
         """Crea un separador elegante"""
@@ -750,11 +394,11 @@ class AnalizadorSentimientosGUI:
         )
         section_title.pack(anchor='w', pady=(0, 15))
         
-        # Container de botones con grid ampliado (2 filas)
+        # Container de botones con grid ampliado (3 filas)
         buttons_grid = tk.Frame(controls_container, bg=self.colores['bg_primary'])
         buttons_grid.pack(fill='x')
         
-        # Configurar grid para 2 filas y 3 columnas
+        # Configurar grid para 3 filas y 3 columnas
         for i in range(3):
             buttons_grid.columnconfigure(i, weight=1)
         
@@ -774,19 +418,25 @@ class AnalizadorSentimientosGUI:
                                     state='disabled', color='purple')
         
         # Segunda fila de botones
-        self.crear_boton_profesional(buttons_grid, "💾 Exportar", 
-                                    "Guardar resultados limpios", 
-                                    self.exportar_resultados, 0, 1, 
-                                    state='disabled', color='green')
+        self.crear_boton_profesional(buttons_grid, "📊 Métricas", 
+                                    "Evaluar rendimiento del modelo", 
+                                    self.calcular_metricas_evaluacion, 0, 1, 
+                                    state='disabled', color='blue')
         
-        self.crear_boton_profesional(buttons_grid, "📊 Visualizar", 
+        self.crear_boton_profesional(buttons_grid, "📈 Visualizar", 
                                     "Mostrar gráficos avanzados", 
                                     self.mostrar_graficos, 1, 1, 
                                     state='disabled', color='orange')
         
+        self.crear_boton_profesional(buttons_grid, "💾 Exportar", 
+                                    "Guardar resultados completos", 
+                                    self.exportar_resultados, 2, 1, 
+                                    state='disabled', color='green')
+        
+        # Tercera fila de botones
         self.crear_boton_profesional(buttons_grid, "🔄 Resetear", 
                                     "Limpiar y comenzar de nuevo", 
-                                    self.resetear_analisis, 2, 1, 
+                                    self.resetear_analisis, 0, 2, 
                                     state='disabled', color='red')
 
     def crear_boton_profesional(self, parent, titulo, descripcion, comando, col, row, color='blue', **kwargs):
@@ -869,6 +519,8 @@ class AnalizadorSentimientosGUI:
             self.btn_analizar = main_btn
         elif 'Limpiar' in titulo:
             self.btn_limpiar = main_btn
+        elif 'Métricas' in titulo:
+            self.btn_metricas = main_btn
         elif 'Exportar' in titulo:
             self.btn_exportar = main_btn
         elif 'Visualizar' in titulo:
@@ -877,7 +529,7 @@ class AnalizadorSentimientosGUI:
             self.btn_resetear = main_btn
 
     def crear_panel_informacion_mejorado(self, parent):
-        """Crea panel de información profesional mejorado"""
+        """Crea panel de información profesional mejorado - MANTIENE EL DASHBOARD ORIGINAL"""
         info_container = tk.Frame(parent, bg=self.colores['bg_primary'])
         info_container.pack(fill='x', pady=(0, 30))
         
@@ -891,24 +543,24 @@ class AnalizadorSentimientosGUI:
         )
         section_title.pack(anchor='w', pady=(0, 15))
         
-        # Grid de información (3 columnas)
+        # Grid de información (3 columnas) - MANTIENE LAS 3 COLUMNAS ORIGINALES
         info_grid = tk.Frame(info_container, bg=self.colores['bg_primary'])
         info_grid.pack(fill='x')
         info_grid.columnconfigure(0, weight=1)
         info_grid.columnconfigure(1, weight=1)
         info_grid.columnconfigure(2, weight=1)
         
-        # Card de información del archivo
+        # Card de información del archivo (ORIGINAL)
         self.crear_card_informacion_mejorada(info_grid, 0)
         
-        # Card de estadísticas
+        # Card de estadísticas (ORIGINAL - MÉTRICAS AVANZADAS)
         self.crear_card_estadisticas_mejorada(info_grid, 1)
         
-        # Card de limpieza robusta
-        self.crear_card_limpieza_robusta(info_grid, 2)
+        # Card de corrección ortográfica (ORIGINAL)
+        self.crear_card_correccion_ortografica(info_grid, 2)
 
     def crear_card_informacion_mejorada(self, parent, columna):
-        """Crea card de información del archivo mejorada"""
+        """Crea card de información del archivo mejorada - MANTIENE ORIGINAL"""
         card = self.crear_card_base(parent, columna)
         
         # Header de la card con icono animado
@@ -952,7 +604,7 @@ class AnalizadorSentimientosGUI:
         sep = tk.Frame(card, height=1, bg=self.colores['border'])
         sep.pack(fill='x', padx=25, pady=(0, 15))
         
-        # Contenido
+        # Contenido - MANTIENE TEXTO ORIGINAL
         content = tk.Frame(card, bg=self.colores['bg_card'])
         content.pack(fill='both', expand=True, padx=25, pady=(0, 20))
         
@@ -968,7 +620,7 @@ class AnalizadorSentimientosGUI:
         self.info_archivo.pack(anchor='w', fill='both')
 
     def crear_card_estadisticas_mejorada(self, parent, columna):
-        """Crea card de estadísticas mejorada"""
+        """Crea card de estadísticas mejorada - MANTIENE ORIGINAL"""
         card = self.crear_card_base(parent, columna)
         
         # Header de la card
@@ -1010,7 +662,7 @@ class AnalizadorSentimientosGUI:
         sep = tk.Frame(card, height=1, bg=self.colores['border'])
         sep.pack(fill='x', padx=25, pady=(0, 15))
         
-        # Contenido
+        # Contenido - MANTIENE TEXTO ORIGINAL
         content = tk.Frame(card, bg=self.colores['bg_card'])
         content.pack(fill='both', expand=True, padx=25, pady=(0, 20))
         
@@ -1025,8 +677,8 @@ class AnalizadorSentimientosGUI:
         )
         self.stats_label.pack(anchor='w', fill='both')
 
-    def crear_card_limpieza_robusta(self, parent, columna):
-        """Crea card de información de limpieza robusta"""
+    def crear_card_correccion_ortografica(self, parent, columna):
+        """Crea card de corrección ortográfica - MANTIENE ORIGINAL"""
         card = self.crear_card_base(parent, columna)
         
         # Header de la card
@@ -1069,7 +721,7 @@ class AnalizadorSentimientosGUI:
         sep = tk.Frame(card, height=1, bg=self.colores['border'])
         sep.pack(fill='x', padx=25, pady=(0, 15))
         
-        # Contenido
+        # Contenido - MANTIENE TEXTO ORIGINAL
         content = tk.Frame(card, bg=self.colores['bg_card'])
         content.pack(fill='both', expand=True, padx=25, pady=(0, 20))
         
@@ -1136,6 +788,8 @@ class AnalizadorSentimientosGUI:
         self.crear_pestana_resumen_premium()
         self.crear_pestana_datos_premium()
         self.crear_pestana_limpieza_robusta()
+        # NUEVA PESTAÑA PARA MÉTRICAS
+        self.crear_pestana_metricas_evaluacion()
 
     def crear_pestana_resumen_premium(self):
         """Crea pestaña de resumen premium con mejor scroll"""
@@ -1308,6 +962,66 @@ class AnalizadorSentimientosGUI:
                                          "• Normalización de caracteres especiales\n" +
                                          "• Preservación del contexto emocional")
 
+    def crear_pestana_metricas_evaluacion(self):
+        """Crea pestaña específica para mostrar métricas de evaluación"""
+        metricas_frame = tk.Frame(self.notebook, bg=self.colores['bg_primary'])
+        self.notebook.add(metricas_frame, text="📈 Métricas de Evaluación")
+        
+        # Container principal
+        main_container = tk.Frame(metricas_frame, bg=self.colores['bg_primary'])
+        main_container.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Frame para el texto y scrollbar
+        text_frame = tk.Frame(main_container, bg=self.colores['bg_primary'])
+        text_frame.pack(fill='both', expand=True)
+        
+        # Área de texto para métricas
+        self.texto_metricas = tk.Text(
+            text_frame,
+            wrap='word',
+            font=('Segoe UI', 11),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary'],
+            relief='flat',
+            bd=0,
+            padx=15,
+            pady=15,
+            spacing1=4,
+            spacing2=2,
+            spacing3=1,
+            insertbackground=self.colores['text_primary'],
+            selectbackground=self.colores['accent_green'],
+            selectforeground='white',
+            height=20
+        )
+        self.texto_metricas.pack(side='left', fill='both', expand=True)
+        
+        # Scrollbar
+        scrollbar_metricas = tk.Scrollbar(
+            text_frame,
+            orient='vertical',
+            command=self.texto_metricas.yview,
+            bg=self.colores['bg_secondary'],
+            troughcolor=self.colores['bg_input'],
+            activebackground=self.colores['accent_green'],
+            width=14
+        )
+        scrollbar_metricas.pack(side='right', fill='y', padx=(5, 0))
+        self.texto_metricas.config(yscrollcommand=scrollbar_metricas.set)
+        
+        # Texto inicial
+        self.mostrar_en_metricas("📈 MÉTRICAS DE EVALUACIÓN DEL MODELO\n" +
+                                "Esta función estará disponible después de completar el análisis de sentimientos.\n\n" +
+                                "📊 Métricas que se calcularán:\n" +
+                                "• Exactitud (Accuracy): Porcentaje de predicciones correctas\n" +
+                                "• Precisión (Precision): Exactitud de predicciones positivas\n" +
+                                "• Exhaustividad (Recall): Capacidad de detectar casos positivos\n" +
+                                "• F1-Score: Media armónica entre precisión y recall\n" +
+                                "• Matriz de Confusión: Visualización de aciertos y errores\n" +
+                                "• Métricas por clase: Análisis individual por sentimiento\n\n" +
+                                "🎯 Estas métricas te ayudarán a evaluar el rendimiento\n" +
+                                "de tu modelo de análisis de sentimientos.")
+
     def crear_footer_profesional(self, parent):
         """Crea footer profesional con progreso"""
         footer_container = tk.Frame(parent, bg=self.colores['bg_primary'])
@@ -1350,7 +1064,8 @@ class AnalizadorSentimientosGUI:
         )
         self.progreso.pack(fill='x', pady=(0, 5))
 
-    # Métodos de funcionalidad mejorados con corrección ortográfica
+    # ========== MÉTODOS DE FUNCIONALIDAD ==========
+
     def cargar_archivo(self):
         tipos_archivo = [
             ("Archivos de Texto", "*.txt"),
@@ -1454,8 +1169,9 @@ class AnalizadorSentimientosGUI:
                 self.btn_exportar.config(state='normal')
                 self.btn_graficos.config(state='normal')
                 self.btn_limpiar.config(state='normal')  # Habilitar limpieza robusta
+                self.btn_metricas.config(state='normal')  # Habilitar métricas
                 
-                # Actualizar información de limpieza
+                # Actualizar información de limpieza en el dashboard
                 texto_limpieza_habilitada = "✏️ Corrección ortográfica disponible\n• Análisis completado exitosamente\n• 'me seto felis' → 'me siento feliz'\n• Conversión de emojis a texto\n• Limpieza de URLs y emails\n• Preservación del contexto emocional"
                 self.limpieza_label.config(text=texto_limpieza_habilitada)
                 self.cleaning_badge.config(text="Disponible", bg=self.colores['accent_blue'])
@@ -1473,8 +1189,77 @@ class AnalizadorSentimientosGUI:
         
         threading.Thread(target=analizar, daemon=True).start()
 
+    def calcular_metricas_evaluacion(self):
+        """Calcula y muestra las métricas de evaluación del modelo"""
+        if not self.analisis_completado:
+            messagebox.showwarning("Análisis Requerido", 
+                                 "Debes completar el análisis de sentimientos antes de calcular métricas.\n" +
+                                 "Las métricas evalúan el rendimiento del modelo de análisis.")
+            return
+        
+        self.progress_label.config(text="📊 Calculando métricas de evaluación del modelo...")
+        self.progreso.config(mode='indeterminate')
+        self.progreso.start()
+        self.ventana.update()
+        
+        def calcular_metricas():
+            try:
+                # Calcular métricas usando el módulo importado
+                metricas, reporte = calcular_metricas_modelo(
+                    self.logica.datos,
+                    columna_prediccion='sentimiento'
+                )
+                
+                self.progreso.stop()
+                self.progreso.config(mode='determinate', value=100)
+                
+                # Mostrar el reporte completo en la pestaña de métricas
+                self.mostrar_en_metricas(reporte)
+                
+                # Actualizar interfaz
+                self.progress_label.config(text="✅ Métricas de evaluación calculadas exitosamente")
+                self.metricas_calculadas = True
+                
+                # Mostrar mensaje informativo
+                exactitud = metricas['exactitud']
+                f1_score = metricas['f1_macro']
+                tipo_calculo = metricas.get('tipo_calculo', 'desconocido')
+                
+                if tipo_calculo == 'estimado':
+                    messagebox.showinfo("Métricas Calculadas", 
+                                      f"✅ Métricas de evaluación calculadas (estimadas)\n\n" +
+                                      f"📊 Resultados principales:\n" +
+                                      f"• Exactitud: {exactitud:.2%}\n" +
+                                      f"• F1-Score: {f1_score:.2%}\n" +
+                                      f"• Precisión: {metricas['precision_macro']:.2%}\n" +
+                                      f"• Recall: {metricas['recall_macro']:.2%}\n\n" +
+                                      f"⚠️ Nota: Métricas estimadas sin etiquetas ground truth\n" +
+                                      f"Para métricas reales, proporcione etiquetas de referencia.")
+                else:
+                    messagebox.showinfo("Métricas Calculadas", 
+                                      f"✅ Métricas de evaluación calculadas (reales)\n\n" +
+                                      f"📊 Resultados principales:\n" +
+                                      f"• Exactitud: {exactitud:.2%}\n" +
+                                      f"• F1-Score: {f1_score:.2%}\n" +
+                                      f"• Precisión: {metricas['precision_macro']:.2%}\n" +
+                                      f"• Recall: {metricas['recall_macro']:.2%}\n\n" +
+                                      f"✅ Evaluación realizada con etiquetas ground truth")
+                
+                # Actualizar scroll después de cambios
+                self.ventana.after(100, self.actualizar_scroll)
+                
+            except Exception as e:
+                self.progreso.stop()
+                self.progreso.config(value=0)
+                self.progress_label.config(text="❌ Error al calcular métricas")
+                messagebox.showerror("Error en Métricas", f"Error durante el cálculo de métricas:\n{str(e)}")
+            
+            self.ventana.update()
+        
+        threading.Thread(target=calcular_metricas, daemon=True).start()
+
     def limpiar_datos_robusto(self):
-        """Ejecuta la limpieza robusta CON CORRECCIÓN ORTOGRÁFICA"""
+        """Ejecuta la limpieza robusta CON CORRECCIÓN ORTOGRÁFICA usando el módulo importado"""
         if not self.analisis_completado:
             messagebox.showwarning("Análisis Requerido", 
                                  "Debes completar el análisis de sentimientos antes de usar la corrección ortográfica.\n" +
@@ -1487,6 +1272,7 @@ class AnalizadorSentimientosGUI:
         self.ventana.update()
         
         def limpiar():
+            # LLAMAR AL MÉTODO DEL LIMPIADOR ROBUSTO IMPORTADO
             exito, mensaje, datos_limpios, estadisticas = self.limpiador_robusto.limpiar_datos_post_analisis(self.logica.datos)
             self.progreso.stop()
             self.progreso.config(mode='determinate', value=0)
@@ -1499,7 +1285,7 @@ class AnalizadorSentimientosGUI:
                 # Actualizar datos en la lógica
                 self.logica.datos = datos_limpios
                 
-                # Actualizar información de limpieza
+                # Actualizar información de limpieza en el dashboard
                 palabras_corregidas = estadisticas.get('palabras_corregidas', 0)
                 textos_corregidos = estadisticas.get('textos_con_correcciones', 0)
                 emojis_convertidos = estadisticas.get('emojis_convertidos', 0)
@@ -1513,7 +1299,7 @@ class AnalizadorSentimientosGUI:
                 
                 self.limpieza_label.config(text=limpieza_text)
                 
-                # Generar reporte de limpieza para la pestaña
+                # GENERAR REPORTE DE LIMPIEZA USANDO EL MÉTODO DEL MÓDULO
                 reporte_limpieza = self.limpiador_robusto.generar_reporte_limpieza()
                 self.mostrar_en_limpieza_robusta(reporte_limpieza)
                 
@@ -1627,6 +1413,10 @@ class AnalizadorSentimientosGUI:
                         detalles_exportacion += f"• Comparación antes/después de corrección\n"
                         detalles_exportacion += f"• Emojis convertidos a texto descriptivo\n"
                     
+                    if self.metricas_calculadas:
+                        detalles_exportacion += f"• Métricas de evaluación del modelo\n"
+                        detalles_exportacion += f"• Reporte detallado de rendimiento\n"
+                    
                     detalles_exportacion += f"• Información de procesamiento y calidad\n"
                     detalles_exportacion += f"• Datos categorizados por tipo de sentimiento\n"
                     detalles_exportacion += f"• Textos limpios y listos para uso profesional"
@@ -1648,6 +1438,7 @@ class AnalizadorSentimientosGUI:
                                       "• Todos los datos cargados\n" +
                                       "• Resultados del análisis\n" +
                                       "• Correcciones ortográficas aplicadas\n" +
+                                      "• Métricas calculadas\n" +
                                       "• Configuraciones actuales")
         
         if respuesta:
@@ -1662,16 +1453,20 @@ class AnalizadorSentimientosGUI:
             self.correcciones_aplicadas = False
             self.analisis_completado = False
             self.limpieza_robusta_aplicada = False
+            self.metricas_calculadas = False
             
-            # Resetear limpiador
+            # RESETEAR LIMPIADOR CREANDO UNA NUEVA INSTANCIA DEL MÓDULO
             self.limpiador_robusto = LimpiadorDatosRobusto()
+            # RESETEAR CALCULADOR DE MÉTRICAS
+            self.calculador_metricas = CalculadorMetricas()
             
-            # Resetear interfaz
+            # Resetear interfaz - MANTIENE TEXTO ORIGINAL DEL DASHBOARD
             self.info_archivo.config(text="📁 No hay archivo seleccionado\n• Selecciona un archivo de texto, CSV, Excel o Word\n• Formatos soportados: TXT, CSV, XLSX, DOCX, PDF\n• Tamaño máximo recomendado: 50MB\n• Corrección ortográfica automática disponible")
             self.stats_label.config(text="📊 Ejecuta el análisis para ver estadísticas\n• Distribución de sentimientos\n• Puntuaciones de confianza\n• Métricas de intensidad emocional\n• Análisis de correlaciones\n• Insights detallados")
             
-            limpieza_text_inicial = "✏️ Corrección automática de ortografía\n• Disponible tras completar análisis\n• 'me seto felis' → 'me siento feliz'\n• Conversión de emojis a texto\n• Limpieza de URLs y emails\n• Preservación del contexto emocional"
-            self.limpieza_label.config(text=limpieza_text_inicial)
+            # MANTIENE TEXTO ORIGINAL DE CORRECCIÓN ORTOGRÁFICA
+            texto_limpieza_original = "✏️ Corrección automática de ortografía\n• Disponible tras completar análisis\n• 'me seto felis' → 'me siento feliz'\n• Conversión de emojis a texto\n• Limpieza de URLs y emails\n• Preservación del contexto emocional"
+            self.limpieza_label.config(text=texto_limpieza_original)
             
             # Resetear badges
             self.status_badge.config(text="Esperando", bg=self.colores['text_muted'])
@@ -1686,10 +1481,12 @@ class AnalizadorSentimientosGUI:
             self.mostrar_en_resumen("📋 RESUMEN EJECUTIVO\nAquí se mostrará un resumen completo del análisis una vez que cargues un archivo y ejecutes el análisis de sentimientos con corrección ortográfica automática.")
             self.mostrar_en_datos("📊 DATOS DETALLADOS\nAquí se mostrarán los datos detallados del análisis con todas las métricas calculadas y correcciones ortográficas aplicadas.")
             self.mostrar_en_limpieza_robusta("✏️ CORRECCIÓN ORTOGRÁFICA AUTOMÁTICA\nEsta función estará disponible después de completar el análisis de sentimientos.\n📝 La corrección ortográfica incluye:\n• Corrección de palabras mal escritas: 'me seto felis' → 'me siento feliz'\n• Normalización de texto: 'estoi' → 'estoy'\n• Conversión de emojis a texto descriptivo\n• Eliminación de URLs y enlaces\n• Limpieza de direcciones de email\n• Normalización de caracteres especiales\n• Preservación del contexto emocional")
+            self.mostrar_en_metricas("📈 MÉTRICAS DE EVALUACIÓN DEL MODELO\nEsta función estará disponible después de completar el análisis de sentimientos.\n\n📊 Métricas que se calcularán:\n• Exactitud (Accuracy): Porcentaje de predicciones correctas\n• Precisión (Precision): Exactitud de predicciones positivas\n• Exhaustividad (Recall): Capacidad de detectar casos positivos\n• F1-Score: Media armónica entre precisión y recall\n• Matriz de Confusión: Visualización de aciertos y errores\n• Métricas por clase: Análisis individual por sentimiento\n\n🎯 Estas métricas te ayudarán a evaluar el rendimiento\nde tu modelo de análisis de sentimientos.")
             
             # Resetear botones
             self.btn_analizar.config(state='disabled')
             self.btn_limpiar.config(state='disabled')
+            self.btn_metricas.config(state='disabled')
             self.btn_exportar.config(state='disabled')
             self.btn_graficos.config(state='disabled')
             self.btn_resetear.config(state='disabled')
@@ -1707,7 +1504,8 @@ class AnalizadorSentimientosGUI:
                               "• Todas las configuraciones restauradas\n" +
                               "• Memoria liberada completamente\n" +
                               "• Sistema listo para nuevo análisis\n" +
-                              "• Corrección ortográfica disponible\n\n" +
+                              "• Corrección ortográfica disponible\n" +
+                              "• Evaluación de métricas disponible\n\n" +
                               "📁 Puedes cargar un nuevo archivo para comenzar.")
 
     def actualizar_scroll(self):
@@ -1744,6 +1542,14 @@ class AnalizadorSentimientosGUI:
         self.texto_limpieza_robusta.config(state='disabled')
         self.ventana.after(50, self.actualizar_scroll)
 
+    def mostrar_en_metricas(self, texto):
+        """Muestra texto en la pestaña de métricas y actualiza el scroll"""
+        self.texto_metricas.config(state='normal')
+        self.texto_metricas.delete(1.0, tk.END)
+        self.texto_metricas.insert(1.0, texto)
+        self.texto_metricas.config(state='disabled')
+        self.ventana.after(50, self.actualizar_scroll)
+
     def ejecutar(self):
         """Ejecuta la aplicación principal"""
         # Configuración final del scroll antes de mostrar
@@ -1752,10 +1558,22 @@ class AnalizadorSentimientosGUI:
 
 
 if __name__ == "__main__":
-    print("✨ ANALIZADOR DE SENTIMIENTOS PROFESIONAL v3.0 CON CORRECCIÓN ORTOGRÁFICA")
+    print("✨ ANALIZADOR DE SENTIMIENTOS PROFESIONAL v3.0 CON CORRECCIÓN ORTOGRÁFICA Y MÉTRICAS")
     print("=" * 80)
-    print("🚀 Inicializando interfaz profesional con corrección ortográfica...")
+    print("🚀 Inicializando interfaz profesional con corrección ortográfica y evaluación de métricas...")
     print("✏️ Sistema de corrección ortográfica automática integrado")
+    print("📊 Módulo de evaluación de métricas integrado")
+    
+    # NUEVO: Mostrar información de VADER y Naive Bayes
+    if VADER_DISPONIBLE:
+        print("⚡ VADER Sentiment Analysis disponible")
+    else:
+        print("⚠️ VADER no disponible - Instala con: pip install nltk")
+    
+    if SKLEARN_DISPONIBLE:
+        print("📊 Naive Bayes (Bernoulli) disponible")
+    else:
+        print("⚠️ Naive Bayes no disponible - Instala con: pip install scikit-learn")
     
     if not verificar_dependencias():
         print("\n❌ Error: Dependencias faltantes.")
@@ -1772,6 +1590,10 @@ if __name__ == "__main__":
         else:
             print("⚠️ Sistema de corrección ortográfica no disponible")
             print("   Instala con: pip install pyspellchecker")
+        
+        print("📊 Módulo de métricas de evaluación integrado")
+        print("   🎯 Métricas: Exactitud, Precisión, Recall, F1-Score")
+        print("   📈 Evaluación completa del modelo")
         
         print("🧹 Sistema de limpieza robusta con corrección ortográfica activado")
         print("🎯 Iniciando aplicación avanzada...")

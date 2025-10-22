@@ -1,4 +1,4 @@
-#main.py
+# main.py
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import threading
@@ -10,6 +10,9 @@ from analisis import AnalizadorSentimientos as AnalizadorLogica, verificar_depen
 
 # IMPORTAR EL MÓDULO DE LIMPIEZA ROBUSTA
 from limpieza_robusta import LimpiadorDatosRobusto
+
+# IMPORTAR EL MÓDULO DE MÉTRICAS
+from metricas_evaluacion import CalculadorMetricas, calcular_metricas_modelo
 
 # Dependencias opcionales
 DOCX_DISPONIBLE = False
@@ -70,9 +73,12 @@ class AnalizadorSentimientosGUI:
         self.logica = AnalizadorLogica()
         # INSTANCIAR EL LIMPIADOR ROBUSTO DESDE EL MÓDULO IMPORTADO
         self.limpiador_robusto = LimpiadorDatosRobusto()
+        # INSTANCIAR EL CALCULADOR DE MÉTRICAS
+        self.calculador_metricas = CalculadorMetricas()
         self.correcciones_aplicadas = False
         self.analisis_completado = False
         self.limpieza_robusta_aplicada = False
+        self.metricas_calculadas = False
         self.setup_gui()
 
     def setup_gui(self):
@@ -297,7 +303,7 @@ class AnalizadorSentimientosGUI:
         # Subtítulo profesional mejorado
         subtitle = tk.Label(
             title_frame,
-            text="Análisis Inteligente de Emociones • Procesamiento Avanzado de Lenguaje Natural • Corrección Ortográfica Automática",
+            text="Análisis Inteligente de Emociones • Procesamiento Avanzado de Lenguaje Natural • Corrección Ortográfica Automática • Evaluación de Métricas",
             font=('Segoe UI', 12),
             bg=self.colores['bg_primary'],
             fg=self.colores['text_secondary']
@@ -355,6 +361,18 @@ class AnalizadorSentimientosGUI:
                 pady=3
             )
             nb_badge.pack(side='left', padx=(0, 5))
+        
+        # Badge para métricas
+        metrics_badge = tk.Label(
+            badge_container,
+            text="📈 Métricas Avanzadas",
+            font=('Segoe UI', 9, 'bold'),
+            bg='#7C3AED',
+            fg='white',
+            padx=10,
+            pady=3
+        )
+        metrics_badge.pack(side='left', padx=(0, 5))
 
     def crear_separador(self, parent):
         """Crea un separador elegante"""
@@ -376,11 +394,11 @@ class AnalizadorSentimientosGUI:
         )
         section_title.pack(anchor='w', pady=(0, 15))
         
-        # Container de botones con grid ampliado (2 filas)
+        # Container de botones con grid ampliado (3 filas)
         buttons_grid = tk.Frame(controls_container, bg=self.colores['bg_primary'])
         buttons_grid.pack(fill='x')
         
-        # Configurar grid para 2 filas y 3 columnas
+        # Configurar grid para 3 filas y 3 columnas
         for i in range(3):
             buttons_grid.columnconfigure(i, weight=1)
         
@@ -400,19 +418,25 @@ class AnalizadorSentimientosGUI:
                                     state='disabled', color='purple')
         
         # Segunda fila de botones
-        self.crear_boton_profesional(buttons_grid, "💾 Exportar", 
-                                    "Guardar resultados limpios", 
-                                    self.exportar_resultados, 0, 1, 
-                                    state='disabled', color='green')
+        self.crear_boton_profesional(buttons_grid, "📊 Métricas", 
+                                    "Evaluar rendimiento del modelo", 
+                                    self.calcular_metricas_evaluacion, 0, 1, 
+                                    state='disabled', color='blue')
         
-        self.crear_boton_profesional(buttons_grid, "📊 Visualizar", 
+        self.crear_boton_profesional(buttons_grid, "📈 Visualizar", 
                                     "Mostrar gráficos avanzados", 
                                     self.mostrar_graficos, 1, 1, 
                                     state='disabled', color='orange')
         
+        self.crear_boton_profesional(buttons_grid, "💾 Exportar", 
+                                    "Guardar resultados completos", 
+                                    self.exportar_resultados, 2, 1, 
+                                    state='disabled', color='green')
+        
+        # Tercera fila de botones
         self.crear_boton_profesional(buttons_grid, "🔄 Resetear", 
                                     "Limpiar y comenzar de nuevo", 
-                                    self.resetear_analisis, 2, 1, 
+                                    self.resetear_analisis, 0, 2, 
                                     state='disabled', color='red')
 
     def crear_boton_profesional(self, parent, titulo, descripcion, comando, col, row, color='blue', **kwargs):
@@ -495,6 +519,8 @@ class AnalizadorSentimientosGUI:
             self.btn_analizar = main_btn
         elif 'Limpiar' in titulo:
             self.btn_limpiar = main_btn
+        elif 'Métricas' in titulo:
+            self.btn_metricas = main_btn
         elif 'Exportar' in titulo:
             self.btn_exportar = main_btn
         elif 'Visualizar' in titulo:
@@ -503,7 +529,7 @@ class AnalizadorSentimientosGUI:
             self.btn_resetear = main_btn
 
     def crear_panel_informacion_mejorado(self, parent):
-        """Crea panel de información profesional mejorado"""
+        """Crea panel de información profesional mejorado - MANTIENE EL DASHBOARD ORIGINAL"""
         info_container = tk.Frame(parent, bg=self.colores['bg_primary'])
         info_container.pack(fill='x', pady=(0, 30))
         
@@ -517,24 +543,24 @@ class AnalizadorSentimientosGUI:
         )
         section_title.pack(anchor='w', pady=(0, 15))
         
-        # Grid de información (3 columnas)
+        # Grid de información (3 columnas) - MANTIENE LAS 3 COLUMNAS ORIGINALES
         info_grid = tk.Frame(info_container, bg=self.colores['bg_primary'])
         info_grid.pack(fill='x')
         info_grid.columnconfigure(0, weight=1)
         info_grid.columnconfigure(1, weight=1)
         info_grid.columnconfigure(2, weight=1)
         
-        # Card de información del archivo
+        # Card de información del archivo (ORIGINAL)
         self.crear_card_informacion_mejorada(info_grid, 0)
         
-        # Card de estadísticas
+        # Card de estadísticas (ORIGINAL - MÉTRICAS AVANZADAS)
         self.crear_card_estadisticas_mejorada(info_grid, 1)
         
-        # Card de limpieza robusta
-        self.crear_card_limpieza_robusta(info_grid, 2)
+        # Card de corrección ortográfica (ORIGINAL)
+        self.crear_card_correccion_ortografica(info_grid, 2)
 
     def crear_card_informacion_mejorada(self, parent, columna):
-        """Crea card de información del archivo mejorada"""
+        """Crea card de información del archivo mejorada - MANTIENE ORIGINAL"""
         card = self.crear_card_base(parent, columna)
         
         # Header de la card con icono animado
@@ -578,7 +604,7 @@ class AnalizadorSentimientosGUI:
         sep = tk.Frame(card, height=1, bg=self.colores['border'])
         sep.pack(fill='x', padx=25, pady=(0, 15))
         
-        # Contenido
+        # Contenido - MANTIENE TEXTO ORIGINAL
         content = tk.Frame(card, bg=self.colores['bg_card'])
         content.pack(fill='both', expand=True, padx=25, pady=(0, 20))
         
@@ -594,7 +620,7 @@ class AnalizadorSentimientosGUI:
         self.info_archivo.pack(anchor='w', fill='both')
 
     def crear_card_estadisticas_mejorada(self, parent, columna):
-        """Crea card de estadísticas mejorada"""
+        """Crea card de estadísticas mejorada - MANTIENE ORIGINAL"""
         card = self.crear_card_base(parent, columna)
         
         # Header de la card
@@ -636,7 +662,7 @@ class AnalizadorSentimientosGUI:
         sep = tk.Frame(card, height=1, bg=self.colores['border'])
         sep.pack(fill='x', padx=25, pady=(0, 15))
         
-        # Contenido
+        # Contenido - MANTIENE TEXTO ORIGINAL
         content = tk.Frame(card, bg=self.colores['bg_card'])
         content.pack(fill='both', expand=True, padx=25, pady=(0, 20))
         
@@ -651,8 +677,8 @@ class AnalizadorSentimientosGUI:
         )
         self.stats_label.pack(anchor='w', fill='both')
 
-    def crear_card_limpieza_robusta(self, parent, columna):
-        """Crea card de información de limpieza robusta"""
+    def crear_card_correccion_ortografica(self, parent, columna):
+        """Crea card de corrección ortográfica - MANTIENE ORIGINAL"""
         card = self.crear_card_base(parent, columna)
         
         # Header de la card
@@ -695,7 +721,7 @@ class AnalizadorSentimientosGUI:
         sep = tk.Frame(card, height=1, bg=self.colores['border'])
         sep.pack(fill='x', padx=25, pady=(0, 15))
         
-        # Contenido
+        # Contenido - MANTIENE TEXTO ORIGINAL
         content = tk.Frame(card, bg=self.colores['bg_card'])
         content.pack(fill='both', expand=True, padx=25, pady=(0, 20))
         
@@ -762,6 +788,8 @@ class AnalizadorSentimientosGUI:
         self.crear_pestana_resumen_premium()
         self.crear_pestana_datos_premium()
         self.crear_pestana_limpieza_robusta()
+        # NUEVA PESTAÑA PARA MÉTRICAS
+        self.crear_pestana_metricas_evaluacion()
 
     def crear_pestana_resumen_premium(self):
         """Crea pestaña de resumen premium con mejor scroll"""
@@ -934,6 +962,66 @@ class AnalizadorSentimientosGUI:
                                          "• Normalización de caracteres especiales\n" +
                                          "• Preservación del contexto emocional")
 
+    def crear_pestana_metricas_evaluacion(self):
+        """Crea pestaña específica para mostrar métricas de evaluación"""
+        metricas_frame = tk.Frame(self.notebook, bg=self.colores['bg_primary'])
+        self.notebook.add(metricas_frame, text="📈 Métricas de Evaluación")
+        
+        # Container principal
+        main_container = tk.Frame(metricas_frame, bg=self.colores['bg_primary'])
+        main_container.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Frame para el texto y scrollbar
+        text_frame = tk.Frame(main_container, bg=self.colores['bg_primary'])
+        text_frame.pack(fill='both', expand=True)
+        
+        # Área de texto para métricas
+        self.texto_metricas = tk.Text(
+            text_frame,
+            wrap='word',
+            font=('Segoe UI', 11),
+            bg=self.colores['bg_primary'],
+            fg=self.colores['text_primary'],
+            relief='flat',
+            bd=0,
+            padx=15,
+            pady=15,
+            spacing1=4,
+            spacing2=2,
+            spacing3=1,
+            insertbackground=self.colores['text_primary'],
+            selectbackground=self.colores['accent_green'],
+            selectforeground='white',
+            height=20
+        )
+        self.texto_metricas.pack(side='left', fill='both', expand=True)
+        
+        # Scrollbar
+        scrollbar_metricas = tk.Scrollbar(
+            text_frame,
+            orient='vertical',
+            command=self.texto_metricas.yview,
+            bg=self.colores['bg_secondary'],
+            troughcolor=self.colores['bg_input'],
+            activebackground=self.colores['accent_green'],
+            width=14
+        )
+        scrollbar_metricas.pack(side='right', fill='y', padx=(5, 0))
+        self.texto_metricas.config(yscrollcommand=scrollbar_metricas.set)
+        
+        # Texto inicial
+        self.mostrar_en_metricas("📈 MÉTRICAS DE EVALUACIÓN DEL MODELO\n" +
+                                "Esta función estará disponible después de completar el análisis de sentimientos.\n\n" +
+                                "📊 Métricas que se calcularán:\n" +
+                                "• Exactitud (Accuracy): Porcentaje de predicciones correctas\n" +
+                                "• Precisión (Precision): Exactitud de predicciones positivas\n" +
+                                "• Exhaustividad (Recall): Capacidad de detectar casos positivos\n" +
+                                "• F1-Score: Media armónica entre precisión y recall\n" +
+                                "• Matriz de Confusión: Visualización de aciertos y errores\n" +
+                                "• Métricas por clase: Análisis individual por sentimiento\n\n" +
+                                "🎯 Estas métricas te ayudarán a evaluar el rendimiento\n" +
+                                "de tu modelo de análisis de sentimientos.")
+
     def crear_footer_profesional(self, parent):
         """Crea footer profesional con progreso"""
         footer_container = tk.Frame(parent, bg=self.colores['bg_primary'])
@@ -976,7 +1064,8 @@ class AnalizadorSentimientosGUI:
         )
         self.progreso.pack(fill='x', pady=(0, 5))
 
-    # Métodos de funcionalidad mejorados con corrección ortográfica
+    # ========== MÉTODOS DE FUNCIONALIDAD ==========
+
     def cargar_archivo(self):
         tipos_archivo = [
             ("Archivos de Texto", "*.txt"),
@@ -1080,8 +1169,9 @@ class AnalizadorSentimientosGUI:
                 self.btn_exportar.config(state='normal')
                 self.btn_graficos.config(state='normal')
                 self.btn_limpiar.config(state='normal')  # Habilitar limpieza robusta
+                self.btn_metricas.config(state='normal')  # Habilitar métricas
                 
-                # Actualizar información de limpieza
+                # Actualizar información de limpieza en el dashboard
                 texto_limpieza_habilitada = "✏️ Corrección ortográfica disponible\n• Análisis completado exitosamente\n• 'me seto felis' → 'me siento feliz'\n• Conversión de emojis a texto\n• Limpieza de URLs y emails\n• Preservación del contexto emocional"
                 self.limpieza_label.config(text=texto_limpieza_habilitada)
                 self.cleaning_badge.config(text="Disponible", bg=self.colores['accent_blue'])
@@ -1098,6 +1188,75 @@ class AnalizadorSentimientosGUI:
             self.ventana.update()
         
         threading.Thread(target=analizar, daemon=True).start()
+
+    def calcular_metricas_evaluacion(self):
+        """Calcula y muestra las métricas de evaluación del modelo"""
+        if not self.analisis_completado:
+            messagebox.showwarning("Análisis Requerido", 
+                                 "Debes completar el análisis de sentimientos antes de calcular métricas.\n" +
+                                 "Las métricas evalúan el rendimiento del modelo de análisis.")
+            return
+        
+        self.progress_label.config(text="📊 Calculando métricas de evaluación del modelo...")
+        self.progreso.config(mode='indeterminate')
+        self.progreso.start()
+        self.ventana.update()
+        
+        def calcular_metricas():
+            try:
+                # Calcular métricas usando el módulo importado
+                metricas, reporte = calcular_metricas_modelo(
+                    self.logica.datos,
+                    columna_prediccion='sentimiento'
+                )
+                
+                self.progreso.stop()
+                self.progreso.config(mode='determinate', value=100)
+                
+                # Mostrar el reporte completo en la pestaña de métricas
+                self.mostrar_en_metricas(reporte)
+                
+                # Actualizar interfaz
+                self.progress_label.config(text="✅ Métricas de evaluación calculadas exitosamente")
+                self.metricas_calculadas = True
+                
+                # Mostrar mensaje informativo
+                exactitud = metricas['exactitud']
+                f1_score = metricas['f1_macro']
+                tipo_calculo = metricas.get('tipo_calculo', 'desconocido')
+                
+                if tipo_calculo == 'estimado':
+                    messagebox.showinfo("Métricas Calculadas", 
+                                      f"✅ Métricas de evaluación calculadas (estimadas)\n\n" +
+                                      f"📊 Resultados principales:\n" +
+                                      f"• Exactitud: {exactitud:.2%}\n" +
+                                      f"• F1-Score: {f1_score:.2%}\n" +
+                                      f"• Precisión: {metricas['precision_macro']:.2%}\n" +
+                                      f"• Recall: {metricas['recall_macro']:.2%}\n\n" +
+                                      f"⚠️ Nota: Métricas estimadas sin etiquetas ground truth\n" +
+                                      f"Para métricas reales, proporcione etiquetas de referencia.")
+                else:
+                    messagebox.showinfo("Métricas Calculadas", 
+                                      f"✅ Métricas de evaluación calculadas (reales)\n\n" +
+                                      f"📊 Resultados principales:\n" +
+                                      f"• Exactitud: {exactitud:.2%}\n" +
+                                      f"• F1-Score: {f1_score:.2%}\n" +
+                                      f"• Precisión: {metricas['precision_macro']:.2%}\n" +
+                                      f"• Recall: {metricas['recall_macro']:.2%}\n\n" +
+                                      f"✅ Evaluación realizada con etiquetas ground truth")
+                
+                # Actualizar scroll después de cambios
+                self.ventana.after(100, self.actualizar_scroll)
+                
+            except Exception as e:
+                self.progreso.stop()
+                self.progreso.config(value=0)
+                self.progress_label.config(text="❌ Error al calcular métricas")
+                messagebox.showerror("Error en Métricas", f"Error durante el cálculo de métricas:\n{str(e)}")
+            
+            self.ventana.update()
+        
+        threading.Thread(target=calcular_metricas, daemon=True).start()
 
     def limpiar_datos_robusto(self):
         """Ejecuta la limpieza robusta CON CORRECCIÓN ORTOGRÁFICA usando el módulo importado"""
@@ -1126,7 +1285,7 @@ class AnalizadorSentimientosGUI:
                 # Actualizar datos en la lógica
                 self.logica.datos = datos_limpios
                 
-                # Actualizar información de limpieza
+                # Actualizar información de limpieza en el dashboard
                 palabras_corregidas = estadisticas.get('palabras_corregidas', 0)
                 textos_corregidos = estadisticas.get('textos_con_correcciones', 0)
                 emojis_convertidos = estadisticas.get('emojis_convertidos', 0)
@@ -1254,6 +1413,10 @@ class AnalizadorSentimientosGUI:
                         detalles_exportacion += f"• Comparación antes/después de corrección\n"
                         detalles_exportacion += f"• Emojis convertidos a texto descriptivo\n"
                     
+                    if self.metricas_calculadas:
+                        detalles_exportacion += f"• Métricas de evaluación del modelo\n"
+                        detalles_exportacion += f"• Reporte detallado de rendimiento\n"
+                    
                     detalles_exportacion += f"• Información de procesamiento y calidad\n"
                     detalles_exportacion += f"• Datos categorizados por tipo de sentimiento\n"
                     detalles_exportacion += f"• Textos limpios y listos para uso profesional"
@@ -1275,6 +1438,7 @@ class AnalizadorSentimientosGUI:
                                       "• Todos los datos cargados\n" +
                                       "• Resultados del análisis\n" +
                                       "• Correcciones ortográficas aplicadas\n" +
+                                      "• Métricas calculadas\n" +
                                       "• Configuraciones actuales")
         
         if respuesta:
@@ -1289,16 +1453,20 @@ class AnalizadorSentimientosGUI:
             self.correcciones_aplicadas = False
             self.analisis_completado = False
             self.limpieza_robusta_aplicada = False
+            self.metricas_calculadas = False
             
             # RESETEAR LIMPIADOR CREANDO UNA NUEVA INSTANCIA DEL MÓDULO
             self.limpiador_robusto = LimpiadorDatosRobusto()
+            # RESETEAR CALCULADOR DE MÉTRICAS
+            self.calculador_metricas = CalculadorMetricas()
             
-            # Resetear interfaz
+            # Resetear interfaz - MANTIENE TEXTO ORIGINAL DEL DASHBOARD
             self.info_archivo.config(text="📁 No hay archivo seleccionado\n• Selecciona un archivo de texto, CSV, Excel o Word\n• Formatos soportados: TXT, CSV, XLSX, DOCX, PDF\n• Tamaño máximo recomendado: 50MB\n• Corrección ortográfica automática disponible")
             self.stats_label.config(text="📊 Ejecuta el análisis para ver estadísticas\n• Distribución de sentimientos\n• Puntuaciones de confianza\n• Métricas de intensidad emocional\n• Análisis de correlaciones\n• Insights detallados")
             
-            limpieza_text_inicial = "✏️ Corrección automática de ortografía\n• Disponible tras completar análisis\n• 'me seto felis' → 'me siento feliz'\n• Conversión de emojis a texto\n• Limpieza de URLs y emails\n• Preservación del contexto emocional"
-            self.limpieza_label.config(text=limpieza_text_inicial)
+            # MANTIENE TEXTO ORIGINAL DE CORRECCIÓN ORTOGRÁFICA
+            texto_limpieza_original = "✏️ Corrección automática de ortografía\n• Disponible tras completar análisis\n• 'me seto felis' → 'me siento feliz'\n• Conversión de emojis a texto\n• Limpieza de URLs y emails\n• Preservación del contexto emocional"
+            self.limpieza_label.config(text=texto_limpieza_original)
             
             # Resetear badges
             self.status_badge.config(text="Esperando", bg=self.colores['text_muted'])
@@ -1313,10 +1481,12 @@ class AnalizadorSentimientosGUI:
             self.mostrar_en_resumen("📋 RESUMEN EJECUTIVO\nAquí se mostrará un resumen completo del análisis una vez que cargues un archivo y ejecutes el análisis de sentimientos con corrección ortográfica automática.")
             self.mostrar_en_datos("📊 DATOS DETALLADOS\nAquí se mostrarán los datos detallados del análisis con todas las métricas calculadas y correcciones ortográficas aplicadas.")
             self.mostrar_en_limpieza_robusta("✏️ CORRECCIÓN ORTOGRÁFICA AUTOMÁTICA\nEsta función estará disponible después de completar el análisis de sentimientos.\n📝 La corrección ortográfica incluye:\n• Corrección de palabras mal escritas: 'me seto felis' → 'me siento feliz'\n• Normalización de texto: 'estoi' → 'estoy'\n• Conversión de emojis a texto descriptivo\n• Eliminación de URLs y enlaces\n• Limpieza de direcciones de email\n• Normalización de caracteres especiales\n• Preservación del contexto emocional")
+            self.mostrar_en_metricas("📈 MÉTRICAS DE EVALUACIÓN DEL MODELO\nEsta función estará disponible después de completar el análisis de sentimientos.\n\n📊 Métricas que se calcularán:\n• Exactitud (Accuracy): Porcentaje de predicciones correctas\n• Precisión (Precision): Exactitud de predicciones positivas\n• Exhaustividad (Recall): Capacidad de detectar casos positivos\n• F1-Score: Media armónica entre precisión y recall\n• Matriz de Confusión: Visualización de aciertos y errores\n• Métricas por clase: Análisis individual por sentimiento\n\n🎯 Estas métricas te ayudarán a evaluar el rendimiento\nde tu modelo de análisis de sentimientos.")
             
             # Resetear botones
             self.btn_analizar.config(state='disabled')
             self.btn_limpiar.config(state='disabled')
+            self.btn_metricas.config(state='disabled')
             self.btn_exportar.config(state='disabled')
             self.btn_graficos.config(state='disabled')
             self.btn_resetear.config(state='disabled')
@@ -1334,7 +1504,8 @@ class AnalizadorSentimientosGUI:
                               "• Todas las configuraciones restauradas\n" +
                               "• Memoria liberada completamente\n" +
                               "• Sistema listo para nuevo análisis\n" +
-                              "• Corrección ortográfica disponible\n\n" +
+                              "• Corrección ortográfica disponible\n" +
+                              "• Evaluación de métricas disponible\n\n" +
                               "📁 Puedes cargar un nuevo archivo para comenzar.")
 
     def actualizar_scroll(self):
@@ -1371,6 +1542,14 @@ class AnalizadorSentimientosGUI:
         self.texto_limpieza_robusta.config(state='disabled')
         self.ventana.after(50, self.actualizar_scroll)
 
+    def mostrar_en_metricas(self, texto):
+        """Muestra texto en la pestaña de métricas y actualiza el scroll"""
+        self.texto_metricas.config(state='normal')
+        self.texto_metricas.delete(1.0, tk.END)
+        self.texto_metricas.insert(1.0, texto)
+        self.texto_metricas.config(state='disabled')
+        self.ventana.after(50, self.actualizar_scroll)
+
     def ejecutar(self):
         """Ejecuta la aplicación principal"""
         # Configuración final del scroll antes de mostrar
@@ -1379,10 +1558,11 @@ class AnalizadorSentimientosGUI:
 
 
 if __name__ == "__main__":
-    print("✨ ANALIZADOR DE SENTIMIENTOS PROFESIONAL v3.0 CON CORRECCIÓN ORTOGRÁFICA")
+    print("✨ ANALIZADOR DE SENTIMIENTOS PROFESIONAL v3.0 CON CORRECCIÓN ORTOGRÁFICA Y MÉTRICAS")
     print("=" * 80)
-    print("🚀 Inicializando interfaz profesional con corrección ortográfica...")
+    print("🚀 Inicializando interfaz profesional con corrección ortográfica y evaluación de métricas...")
     print("✏️ Sistema de corrección ortográfica automática integrado")
+    print("📊 Módulo de evaluación de métricas integrado")
     
     # NUEVO: Mostrar información de VADER y Naive Bayes
     if VADER_DISPONIBLE:
@@ -1410,6 +1590,10 @@ if __name__ == "__main__":
         else:
             print("⚠️ Sistema de corrección ortográfica no disponible")
             print("   Instala con: pip install pyspellchecker")
+        
+        print("📊 Módulo de métricas de evaluación integrado")
+        print("   🎯 Métricas: Exactitud, Precisión, Recall, F1-Score")
+        print("   📈 Evaluación completa del modelo")
         
         print("🧹 Sistema de limpieza robusta con corrección ortográfica activado")
         print("🎯 Iniciando aplicación avanzada...")
